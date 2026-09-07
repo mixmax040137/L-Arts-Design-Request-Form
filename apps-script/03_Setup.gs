@@ -238,11 +238,10 @@ function createFirstAdmin_(setupKey, email, name, password) {
     });
     props_().deleteProperty(PROP.SETUP_KEY);
 
-    // ตั้งอีเมลแจ้งเตือนเจ้าหน้าที่ให้ตรงกับบัญชีแรกโดยอัตโนมัติ
-    if (getSetting_('notifyEmails', '') === DEFAULT_SETTINGS.notifyEmails) {
-      setSetting_('notifyEmails', mail);
-      setSetting_('replyTo', mail);
-    }
+    // เพิ่มอีเมลบัญชีแรกเข้ารายชื่อผู้รับแจ้งเตือน โดยไม่ลบอีเมลเดิมของฝ่ายทิ้ง
+    var notify = splitList_(getSetting_('notifyEmails', DEFAULT_SETTINGS.notifyEmails));
+    if (notify.indexOf(mail) < 0) notify.push(mail);
+    setSetting_('notifyEmails', notify.join(', '));
 
     return { created: true, email: mail };
   });

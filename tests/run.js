@@ -839,12 +839,15 @@ group('10. งานเบื้องหลัง (workerTick)');
     assertEqual(app.ctx.getRequest_(a.jobId).briefStatus, 'PENDING', 'ต้องรอการยืนยันก่อน');
   });
 
-  test('ปิดคำขอที่ค้างเกิน 15 นาทีให้อัตโนมัติ', () => {
+  test('ปิดคำขอที่ค้างเกิน 15 นาทีและเงียบไปแล้วให้อัตโนมัติ', () => {
     const app = bootstrapApp();
     const a = app.ctx.createRequest_(samplePayload());
     const row = app.ctx.getRequest_(a.jobId);
-    const old = new Date(Date.now() - 20 * 60 * 1000);
-    app.ctx.update_('Requests', row._row, { createdAt: app.ctx.toIso_(old) });
+    // ยื่นมา 20 นาทีแล้วและไม่มีความเคลื่อนไหวอีกเลย
+    app.ctx.update_('Requests', row._row, {
+      createdAt: '2000-01-01 00:00:00',
+      updatedAt: '2000-01-01 00:00:00'
+    });
     app.ctx.workerTick();
     assert(!!app.ctx.getRequest_(a.jobId).submittedAt, 'ต้องปิดคำขอให้อัตโนมัติ');
     assert(app.state.outbox.length >= 1, 'ต้องส่งอีเมลยืนยันให้ด้วย');
@@ -1438,12 +1441,14 @@ group('16. ติดตั้งอัตโนมัติเมื่อเป
     assertEqual(app.ctx.readAll_('Users').length, 0);
   });
 
-  test('ตั้งอีเมลแจ้งเตือนตามบัญชีแรกให้อัตโนมัติ', () => {
+  test('เพิ่มอีเมลบัญชีแรกเข้ารายชื่อผู้รับแจ้งเตือนโดยไม่ลบของเดิม', () => {
     const app = loadApp();
     app.ctx.doGet({ parameter: {} });
     app.ctx.apiCreateFirstAdmin(app.state.props.SETUP_KEY, 'newpr@arts.tu.ac.th', 'ผู้ดูแล', 'FirstAdmin123');
-    assertEqual(app.ctx.getSetting_('notifyEmails', ''), 'newpr@arts.tu.ac.th');
-    assertEqual(app.ctx.getSetting_('replyTo', ''), 'newpr@arts.tu.ac.th');
+    const notify = app.ctx.getSetting_('notifyEmails', '');
+    assert(notify.indexOf('pr@arts.tu.ac.th') >= 0, 'อีเมลเดิมของฝ่ายต้องยังอยู่');
+    assert(notify.indexOf('newpr@arts.tu.ac.th') >= 0, 'อีเมลบัญชีแรกต้องถูกเพิ่มเข้าไป');
+    assertEqual(app.ctx.staffRecipients_().length, 2, 'ต้องแจ้งเตือนทั้งสองอีเมล');
   });
 
   test('createAdmin จากตัวแก้ไขก็ยกเลิกรหัสติดตั้งเช่นกัน', () => {
@@ -1561,6 +1566,124 @@ group('17. ไฟล์รวมสำหรับติดตั้งด้ว
     assert(!!app.state.props.SPREADSHEET_ID, 'ต้องติดตั้งฐานข้อมูลให้');
     assert(!!app.state.props.SETUP_KEY, 'ต้องออกรหัสติดตั้ง');
     assertEqual(app.state.outbox.length, 1, 'ต้องส่งอีเมลรหัสติดตั้ง');
+  });
+}
+
+/* ==========================================================================
+   18. การแจ้งเตือนผู้ออกแบบและลิงก์ของระบบ
+   ========================================================================== */
+group('18. การแจ้งเตือนผู้ออกแบบ (ผู้รับอีเมลคำขอใหม่)');
+
+{
+  test('ผู้รับแจ้งเตือนรวมอีเมลเจ้าของระบบเสมอ', () => {
+    const app = bootstrapApp();
+    app.ctx.setSetting_('notifyEmails', 'someone@arts.tu.ac.th');
+    const to = app.ctx.staffRecipients_();
+    assert(to.indexOf('pr@arts.tu.ac.th') >= 0, 'ต้องมีอีเมลเจ้าของระบบ');
+    assert(to.indexOf('someone@arts.tu.ac.th') >= 0, 'ต้องมีอีเมลที่ตั้งค่าไว้ด้วย');
+  });
+
+  test('ไม่ส่งซ้ำเมื่ออีเมลซ้ำกันหรือพิมพ์ตัวใหญ่', () => {
+    const app = bootstrapApp();
+    app.ctx.setSetting_('notifyEmails', 'PR@ARTS.TU.AC.TH, pr@arts.tu.ac.th, ไม่ใช่อีเมล');
+    const to = app.ctx.staffRecipients_();
+    assertEqual(to.length, 1, 'ต้องเหลืออีเมลเดียว');
+    assertEqual(to[0], 'pr@arts.tu.ac.th');
+  });
+
+  test('ปิดการแจ้งเจ้าของระบบได้ถ้าต้องการ', () => {
+    const app = bootstrapApp();
+    app.ctx.setSetting_('notifyEmails', 'someone@arts.tu.ac.th');
+    app.ctx.setSetting_('notifyOwnerAlways', 'false');
+    const to = app.ctx.staffRecipients_();
+    assertEqual(to.join(','), 'someone@arts.tu.ac.th');
+  });
+
+  test('สร้างบัญชีแรกด้วยอีเมลอื่น แต่ pr@arts.tu.ac.th ยังได้รับแจ้งเตือน', () => {
+    const app = loadApp();
+    app.ctx.doGet({ parameter: {} });
+    app.ctx.apiCreateFirstAdmin(app.state.props.SETUP_KEY,
+      'mixmax040137@gmail.com', 'ผู้ดูแลระบบ', 'FirstAdmin123');
+
+    const notify = app.ctx.getSetting_('notifyEmails', '');
+    assert(notify.indexOf('pr@arts.tu.ac.th') >= 0, 'ต้องไม่ลบอีเมลเดิมของฝ่ายทิ้ง');
+    assert(notify.indexOf('mixmax040137@gmail.com') >= 0, 'ต้องเพิ่มอีเมลบัญชีแรกเข้าไปด้วย');
+
+    app.state.outbox.length = 0;
+    const created = app.ctx.createRequest_(samplePayload());
+    app.ctx.finalizeRequest_(created.jobId);
+
+    const staffMail = app.state.outbox.find(function (m) {
+      return String(m.subject).indexOf('คำขอออกแบบใหม่') >= 0;
+    });
+    assert(!!staffMail, 'ต้องมีอีเมลแจ้งคำขอใหม่ถึงเจ้าหน้าที่');
+    assert(String(staffMail.to).indexOf('pr@arts.tu.ac.th') >= 0,
+      'ผู้ออกแบบที่ pr@arts.tu.ac.th ต้องได้รับอีเมลคำขอ');
+    assert(String(staffMail.to).indexOf('mixmax040137@gmail.com') >= 0,
+      'บัญชีผู้ดูแลก็ต้องได้รับด้วย');
+  });
+
+  test('อีเมลคำขอใหม่มีข้อมูลครบสำหรับเริ่มงาน', () => {
+    const app = bootstrapApp();
+    const created = app.ctx.createRequest_(samplePayload());
+    app.ctx.finalizeRequest_(created.jobId);
+    const mail = app.state.outbox.find(function (m) { return String(m.to).indexOf('pr@arts.tu.ac.th') >= 0; });
+    assert(!!mail, 'ต้องส่งถึง pr@arts.tu.ac.th');
+    assert(mail.htmlBody.indexOf(created.jobId) >= 0, 'ต้องมีเลขที่คำขอ');
+    assert(mail.htmlBody.indexOf('โครงการอบรมการเขียนบทความวิชาการ') >= 0, 'ต้องมีชื่อโครงการ');
+    assert(mail.htmlBody.indexOf('thitiwut@arts.tu.ac.th') >= 0, 'ต้องมีอีเมลผู้ขอไว้ติดต่อกลับ');
+    assert(mail.htmlBody.indexOf('โปสเตอร์ประชาสัมพันธ์') >= 0, 'ต้องมีรายการชิ้นงาน');
+    assert(mail.htmlBody.indexOf('เปิดโฟลเดอร์ใน Drive') >= 0, 'ต้องมีลิงก์โฟลเดอร์งาน');
+  });
+
+  test('ส่งอีเมลทดสอบได้เฉพาะผู้ดูแลระบบ', () => {
+    const app = bootstrapApp();
+    const adminToken = app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token;
+    app.ctx.saveUser_(adminToken, {
+      email: 'staff@arts.tu.ac.th', name: 'เจ้าหน้าที่', role: 'staff', password: 'StaffPass123'
+    });
+    const staffToken = app.ctx.login_('staff@arts.tu.ac.th', 'StaffPass123').token;
+
+    assertEqual(app.ctx.apiAdminTestEmail(staffToken).ok, false, 'เจ้าหน้าที่ทั่วไปต้องทำไม่ได้');
+    assertEqual(app.ctx.apiAdminTestEmail('').ok, false, 'ไม่มี token ต้องทำไม่ได้');
+
+    app.state.outbox.length = 0;
+    const res = app.ctx.apiAdminTestEmail(adminToken);
+    assertEqual(res.ok, true);
+    assert(res.data.sentTo.indexOf('pr@arts.tu.ac.th') >= 0);
+    assertEqual(app.state.outbox.length, 1);
+    assert(app.state.outbox[0].subject.indexOf('ทดสอบการแจ้งเตือน') >= 0);
+  });
+
+  test('หน้าตั้งค่าคืนลิงก์ของระบบให้เจ้าหน้าที่คัดลอกได้', () => {
+    const app = bootstrapApp();
+    const token = app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token;
+    const res = app.ctx.apiAdminSettings(token);
+    assertEqual(res.ok, true);
+    const links = res.data.links;
+    assert(links.publicUrl.indexOf('/exec') > 0, 'ต้องมีลิงก์สาธารณะ');
+    assertEqual(links.staffUrl, links.publicUrl + '?page=login');
+    assert(links.spreadsheetUrl.indexOf('docs.google.com/spreadsheets') >= 0);
+    assert(links.driveUrl.indexOf('drive.google.com') >= 0);
+    assert(res.data.notifyTo.indexOf('pr@arts.tu.ac.th') >= 0, 'ต้องบอกว่าใครได้รับแจ้งเตือนบ้าง');
+  });
+
+  test('ไม่ปิดคำขออัตโนมัติขณะผู้ใช้ยังทยอยอัปโหลดไฟล์อยู่', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload());
+    const row = app.ctx.getRequest_(job.jobId);
+    // ยื่นมานานแล้ว แต่เพิ่งอัปโหลดไฟล์เมื่อครู่นี้
+    app.ctx.update_('Requests', row._row, {
+      createdAt: '2000-01-01 00:00:00',
+      updatedAt: app.ctx.nowIso_()
+    });
+    app.ctx.workerTick();
+    assertEqual(app.ctx.getRequest_(job.jobId).submittedAt, '', 'ต้องรอให้อัปโหลดเสร็จก่อน');
+
+    // พอเงียบไปนานแล้วจึงปิดให้อัตโนมัติ
+    app.ctx.update_('Requests', row._row, { updatedAt: '2000-01-01 00:00:00' });
+    app.ctx.workerTick();
+    assert(!!app.ctx.getRequest_(job.jobId).submittedAt, 'เมื่อเงียบแล้วต้องปิดคำขอให้');
   });
 }
 

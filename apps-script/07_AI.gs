@@ -283,12 +283,16 @@ function workerTick() {
   var now = new Date();
 
   // 1) ปิดคำขอที่ค้างเกิน 15 นาที
+  //    แต่ต้องไม่แตะคำขอที่เพิ่งมีความเคลื่อนไหวใน 10 นาทีล่าสุด
+  //    เพราะผู้ใช้อาจกำลังทยอยอัปโหลดไฟล์ขนาดใหญ่อยู่
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i];
     if (str_(r.submittedAt)) continue;
     var created = parseDate_(r.createdAt);
     if (!created) continue;
     if (now.getTime() - created.getTime() < 15 * 60 * 1000) continue;
+    var touched = parseDate_(r.updatedAt);
+    if (touched && now.getTime() - touched.getTime() < 10 * 60 * 1000) continue;
     try {
       finalizeRequest_(r.jobId);
     } catch (err) {

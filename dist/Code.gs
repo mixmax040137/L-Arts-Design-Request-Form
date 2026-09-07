@@ -40,7 +40,8 @@ var PROP = {
   SECRET: 'APP_SECRET',
   ANTHROPIC_API_KEY: 'ANTHROPIC_API_KEY',
   SETUP_AT: 'SETUP_AT',
-  SETUP_KEY: 'SETUP_KEY'
+  SETUP_KEY: 'SETUP_KEY',
+  OWNER_EMAIL: 'OWNER_EMAIL'
 };
 
 /** ชื่อชีตทั้งหมด */
@@ -150,6 +151,7 @@ var DEFAULT_SETTINGS = {
   minLeadDays: '7',
   slaFirstDraftDays: '5',
   notifyEmails: 'pr@arts.tu.ac.th',
+  notifyOwnerAlways: 'true',
   fromName: 'ฝ่ายสื่อสารองค์กร คณะศิลปศาสตร์ มธ.',
   replyTo: 'pr@arts.tu.ac.th',
   maxFileMB: '10',
@@ -980,11 +982,10 @@ function createFirstAdmin_(setupKey, email, name, password) {
     });
     props_().deleteProperty(PROP.SETUP_KEY);
 
-    // ตั้งอีเมลแจ้งเตือนเจ้าหน้าที่ให้ตรงกับบัญชีแรกโดยอัตโนมัติ
-    if (getSetting_('notifyEmails', '') === DEFAULT_SETTINGS.notifyEmails) {
-      setSetting_('notifyEmails', mail);
-      setSetting_('replyTo', mail);
-    }
+    // เพิ่มอีเมลบัญชีแรกเข้ารายชื่อผู้รับแจ้งเตือน โดยไม่ลบอีเมลเดิมของฝ่ายทิ้ง
+    var notify = splitList_(getSetting_('notifyEmails', DEFAULT_SETTINGS.notifyEmails));
+    if (notify.indexOf(mail) < 0) notify.push(mail);
+    setSetting_('notifyEmails', notify.join(', '));
 
     return { created: true, email: mail };
   });
@@ -2078,11 +2079,45 @@ function sendMail_(to, subject, htmlBody) {
   return true;
 }
 
-/** รายชื่ออีเมลเจ้าหน้าที่ที่ต้องแจ้งเตือน */
+/**
+ * อีเมลของเจ้าของสคริปต์ (บัญชีที่ deploy เว็บแอป)
+ * อ่านครั้งแรกแล้วจำไว้ใน Script Properties เพื่อไม่ต้องเรียก Session ซ้ำทุกครั้ง
+ */
+function ownerEmail_() {
+  var saved = getProp_(PROP.OWNER_EMAIL);
+  if (saved) return saved;
+  var email = '';
+  try {
+    email = str_(Session.getEffectiveUser().getEmail()).toLowerCase();
+  } catch (err) {
+    email = '';
+  }
+  if (email && isValidEmail_(email)) {
+    setProp_(PROP.OWNER_EMAIL, email);
+    return email;
+  }
+  return '';
+}
+
+/**
+ * รายชื่ออีเมลที่ต้องแจ้งเตือนเมื่อมีคำขอใหม่หรือมีความเคลื่อนไหว
+ * รวมอีเมลเจ้าของสคริปต์เสมอ เพื่อให้ผู้ออกแบบได้รับแจ้งแน่นอน
+ * แม้ค่าตั้งค่า notifyEmails จะถูกแก้ผิดพลาด
+ */
 function staffRecipients_() {
-  var list = splitList_(getSetting_('notifyEmails', DEFAULT_SETTINGS.notifyEmails))
-    .filter(function (e) { return isValidEmail_(e); });
-  return list;
+  var list = splitList_(getSetting_('notifyEmails', DEFAULT_SETTINGS.notifyEmails));
+  if (getSettingBool_('notifyOwnerAlways', true)) {
+    list.push(ownerEmail_());
+  }
+  var seen = {};
+  var out = [];
+  for (var i = 0; i < list.length; i++) {
+    var email = str_(list[i]).toLowerCase();
+    if (!email || !isValidEmail_(email) || seen[email]) continue;
+    seen[email] = true;
+    out.push(email);
+  }
+  return out;
 }
 
 /** โครงอีเมลมาตรฐานของระบบ */
@@ -2670,12 +2705,16 @@ function workerTick() {
   var now = new Date();
 
   // 1) ปิดคำขอที่ค้างเกิน 15 นาที
+  //    แต่ต้องไม่แตะคำขอที่เพิ่งมีความเคลื่อนไหวใน 10 นาทีล่าสุด
+  //    เพราะผู้ใช้อาจกำลังทยอยอัปโหลดไฟล์ขนาดใหญ่อยู่
   for (var i = 0; i < rows.length; i++) {
     var r = rows[i];
     if (str_(r.submittedAt)) continue;
     var created = parseDate_(r.createdAt);
     if (!created) continue;
     if (now.getTime() - created.getTime() < 15 * 60 * 1000) continue;
+    var touched = parseDate_(r.updatedAt);
+    if (touched && now.getTime() - touched.getTime() < 10 * 60 * 1000) continue;
     try {
       finalizeRequest_(r.jobId);
     } catch (err) {
@@ -3493,7 +3532,49 @@ function apiAdminSettings(token) {
       if (!Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, key)) continue;
       out.push({ key: key, value: str_(s[key]) });
     }
-    return { settings: out, hasApiKey: !!getProp_(PROP.ANTHROPIC_API_KEY) };
+    var base = safeWebAppUrl_();
+    return {
+      settings: out,
+      hasApiKey: !!getProp_(PROP.ANTHROPIC_API_KEY),
+      notifyTo: staffRecipients_(),
+      ownerEmail: ownerEmail_(),
+      links: {
+        publicUrl: base,
+        formUrl: base ? base + '?page=form' : '',
+        trackUrl: base ? base + '?page=track' : '',
+        staffUrl: base ? base + '?page=login' : '',
+        spreadsheetUrl: (function () {
+          var id = getProp_(PROP.SPREADSHEET_ID);
+          return id ? 'https://docs.google.com/spreadsheets/d/' + id + '/edit' : '';
+        })(),
+        driveUrl: (function () {
+          var id = getProp_(PROP.ROOT_FOLDER_ID);
+          return id ? 'https://drive.google.com/drive/folders/' + id : '';
+        })()
+      }
+    };
+  });
+}
+
+/** ส่งอีเมลทดสอบไปยังผู้รับแจ้งเตือนทั้งหมด ใช้ตรวจว่าการแจ้งเตือนทำงานจริง */
+function apiAdminTestEmail(token) {
+  return respond_(function () {
+    var me = requireAdmin_(token);
+    var to = staffRecipients_();
+    if (to.length === 0) {
+      throw appError_('ยังไม่มีอีเมลผู้รับแจ้งเตือน กรุณากรอกช่อง "อีเมลเจ้าหน้าที่ที่รับแจ้งเตือน" ก่อน');
+    }
+    var body =
+      '<p>นี่คืออีเมลทดสอบจากระบบขอรับบริการออกแบบสื่อประชาสัมพันธ์</p>' +
+      '<p>หากท่านได้รับอีเมลฉบับนี้ แปลว่าการแจ้งเตือนคำขอใหม่จะส่งถึงท่านได้แน่นอน</p>' +
+      emailTable_([
+        ['ผู้ทดสอบ', escapeHtml_(me.name || me.email)],
+        ['เวลาที่ทดสอบ', escapeHtml_(formatThaiDate_(new Date(), true))],
+        ['ผู้รับทั้งหมด', escapeHtml_(to.join(', '))]
+      ]);
+    sendMail_(to, 'ทดสอบการแจ้งเตือน — ' + APP.NAME,
+      emailShell_('ทดสอบการแจ้งเตือน', APP.ORG, body, '', ''));
+    return { sentTo: to };
   });
 }
 

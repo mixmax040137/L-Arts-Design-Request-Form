@@ -711,6 +711,7 @@ var Admin = (function () {
     minLeadDays: ['ระยะเวลายื่นล่วงหน้าขั้นต่ำ (วัน)', 'หากน้อยกว่านี้ ผู้ขอต้องระบุเหตุผลความเร่งด่วน'],
     slaFirstDraftDays: ['ระยะเวลาส่งร่างแรก (วัน)', 'ใช้แสดงในเงื่อนไขการให้บริการ'],
     notifyEmails: ['อีเมลเจ้าหน้าที่ที่รับแจ้งเตือน', 'คั่นหลายอีเมลด้วยเครื่องหมายจุลภาค'],
+    notifyOwnerAlways: ['แจ้งเตือนอีเมลเจ้าของระบบเสมอ', 'ส่งถึงบัญชีที่ deploy เว็บแอปทุกครั้ง แม้ไม่ได้อยู่ในรายชื่อด้านบน'],
     fromName: ['ชื่อผู้ส่งอีเมล', ''],
     replyTo: ['อีเมลสำหรับตอบกลับ', ''],
     maxFileMB: ['ขนาดไฟล์สูงสุดต่อไฟล์ (MB)', ''],
@@ -767,7 +768,53 @@ var Admin = (function () {
           'onclick="Admin.editUser(\'' + App.esc(u.email) + '\')">แก้ไข</button></td></tr>';
     }).join('');
 
+    var L = data.links || {};
+    function linkRow(label, url, hint) {
+      if (!url) return '';
+      return '<div class="mb-3">' +
+        '<div class="detail-label">' + App.esc(label) + '</div>' +
+        '<div class="d-flex gap-2 align-items-center">' +
+          '<input type="text" class="form-control form-control-sm" readonly value="' + App.esc(url) + '">' +
+          '<button class="btn btn-sm btn-ghost flex-shrink-0" onclick="Admin.copyText(this,\'' +
+            App.esc(url) + '\')">คัดลอก</button>' +
+          '<a class="btn btn-sm btn-ghost flex-shrink-0" href="' + App.esc(url) + '" target="_blank">เปิด</a>' +
+        '</div>' +
+        (hint ? '<div class="form-text">' + App.esc(hint) + '</div>' : '') +
+        '</div>';
+    }
+
     document.getElementById('admin-settings').innerHTML =
+      '<div class="card-soft p-3 p-md-4 mb-3">' +
+        '<div class="fw-semibold mb-3"><i class="bi bi-link-45deg me-2" style="color:var(--primary)"></i>' +
+          'ลิงก์ของระบบ</div>' +
+        linkRow('ลิงก์สำหรับผู้ขอรับบริการ (แจกให้หน่วยงานได้เลย)', L.publicUrl,
+          'ลิงก์เดียวใช้ได้ทั้งยื่นคำขอและติดตามสถานะ') +
+        linkRow('ลิงก์เข้าสู่ระบบเจ้าหน้าที่', L.staffUrl,
+          'สำหรับฝ่ายสื่อสารองค์กรเท่านั้น ไม่ต้องแจกให้ผู้ขอรับบริการ') +
+        linkRow('ฐานข้อมูล Google Sheets', L.spreadsheetUrl, '') +
+        linkRow('โฟลเดอร์ไฟล์งานใน Drive', L.driveUrl, '') +
+        '<div class="rules-box" style="font-size:.83rem">' +
+          '<strong>การเพิ่มบัญชีผู้ใช้ระบบ</strong> ทำได้ที่หัวข้อ ' +
+          '<em>บัญชีเจ้าหน้าที่</em> ด้านล่างของหน้านี้เท่านั้น (เฉพาะผู้ดูแลระบบ) ' +
+          'ไม่มีลิงก์สมัครสมาชิกสาธารณะ ผู้ขอรับบริการไม่ต้องมีบัญชีก็ใช้งานได้' +
+        '</div>' +
+      '</div>' +
+      '<div class="card-soft p-3 p-md-4 mb-3">' +
+        '<div class="fw-semibold mb-2"><i class="bi bi-bell me-2" style="color:var(--primary)"></i>' +
+          'การแจ้งเตือนคำขอใหม่</div>' +
+        '<div style="font-size:.87rem" class="mb-2">อีเมลที่จะได้รับแจ้งทุกครั้งที่มีคำขอเข้ามา' +
+          (data.ownerEmail ? ' (รวมบัญชีเจ้าของระบบ ' + App.esc(data.ownerEmail) + ' โดยอัตโนมัติ)' : '') +
+          '</div>' +
+        '<div class="mb-3">' +
+          ((data.notifyTo || []).map(function (e) {
+            return '<span class="badge-soft me-1 mb-1"><i class="bi bi-envelope me-1"></i>' +
+              App.esc(e) + '</span>';
+          }).join('') || '<span style="color:var(--danger);font-size:.87rem">' +
+            'ยังไม่มีผู้รับแจ้งเตือน</span>') +
+        '</div>' +
+        '<button class="btn btn-sm btn-brand" onclick="Admin.testEmail()">' +
+          '<i class="bi bi-send"></i>ส่งอีเมลทดสอบ</button>' +
+      '</div>' +
       '<div class="card-soft p-3 p-md-4 mb-3">' +
         '<div class="fw-semibold mb-3"><i class="bi bi-sliders me-2" style="color:var(--primary)"></i>' +
           'ค่าตั้งค่าระบบ</div>' +
@@ -826,6 +873,28 @@ var Admin = (function () {
     App.api('apiAdminSaveSettings', [token, patch]).then(function () {
       App.loading(false);
       App.toast('บันทึกการตั้งค่าเรียบร้อย (รีเฟรชหน้าเพื่อให้มีผลกับแบบฟอร์ม)', 'ok');
+    }).catch(handleAuthError);
+  }
+
+  function copyText(btn, text) {
+    var box = document.createElement('textarea');
+    box.value = text;
+    box.style.position = 'fixed';
+    box.style.opacity = '0';
+    document.body.appendChild(box);
+    box.select();
+    try { document.execCommand('copy'); } catch (e) { /* เบราว์เซอร์ไม่รองรับ */ }
+    document.body.removeChild(box);
+    var original = btn.innerHTML;
+    btn.innerHTML = '<i class="bi bi-check-lg"></i>';
+    setTimeout(function () { btn.innerHTML = original; }, 1500);
+  }
+
+  function testEmail() {
+    App.loading(true, 'กำลังส่งอีเมลทดสอบ...');
+    App.api('apiAdminTestEmail', [token]).then(function (res) {
+      App.loading(false);
+      App.toast('ส่งอีเมลทดสอบไปที่ ' + res.sentTo.join(', ') + ' แล้ว กรุณาตรวจกล่องจดหมาย', 'ok');
     }).catch(handleAuthError);
   }
 
@@ -952,7 +1021,7 @@ var Admin = (function () {
     changeStatus: changeStatus, setDraftUrl: setDraftUrl, assign: assign, addNote: addNote,
     setRevisionLimit: setRevisionLimit, regenerateBrief: regenerateBrief,
     uploadFinal: uploadFinal, deleteFile: deleteFile, saveSettings: saveSettings,
-    saveApiKey: saveApiKey, clearApiKey: clearApiKey,
+    saveApiKey: saveApiKey, clearApiKey: clearApiKey, testEmail: testEmail, copyText: copyText,
     editUser: editUser, openChangePassword: openChangePassword, exportCsv: exportCsv
   };
 })();

@@ -16,11 +16,45 @@ function sendMail_(to, subject, htmlBody) {
   return true;
 }
 
-/** รายชื่ออีเมลเจ้าหน้าที่ที่ต้องแจ้งเตือน */
+/**
+ * อีเมลของเจ้าของสคริปต์ (บัญชีที่ deploy เว็บแอป)
+ * อ่านครั้งแรกแล้วจำไว้ใน Script Properties เพื่อไม่ต้องเรียก Session ซ้ำทุกครั้ง
+ */
+function ownerEmail_() {
+  var saved = getProp_(PROP.OWNER_EMAIL);
+  if (saved) return saved;
+  var email = '';
+  try {
+    email = str_(Session.getEffectiveUser().getEmail()).toLowerCase();
+  } catch (err) {
+    email = '';
+  }
+  if (email && isValidEmail_(email)) {
+    setProp_(PROP.OWNER_EMAIL, email);
+    return email;
+  }
+  return '';
+}
+
+/**
+ * รายชื่ออีเมลที่ต้องแจ้งเตือนเมื่อมีคำขอใหม่หรือมีความเคลื่อนไหว
+ * รวมอีเมลเจ้าของสคริปต์เสมอ เพื่อให้ผู้ออกแบบได้รับแจ้งแน่นอน
+ * แม้ค่าตั้งค่า notifyEmails จะถูกแก้ผิดพลาด
+ */
 function staffRecipients_() {
-  var list = splitList_(getSetting_('notifyEmails', DEFAULT_SETTINGS.notifyEmails))
-    .filter(function (e) { return isValidEmail_(e); });
-  return list;
+  var list = splitList_(getSetting_('notifyEmails', DEFAULT_SETTINGS.notifyEmails));
+  if (getSettingBool_('notifyOwnerAlways', true)) {
+    list.push(ownerEmail_());
+  }
+  var seen = {};
+  var out = [];
+  for (var i = 0; i < list.length; i++) {
+    var email = str_(list[i]).toLowerCase();
+    if (!email || !isValidEmail_(email) || seen[email]) continue;
+    seen[email] = true;
+    out.push(email);
+  }
+  return out;
 }
 
 /** โครงอีเมลมาตรฐานของระบบ */

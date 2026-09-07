@@ -390,7 +390,49 @@ function apiAdminSettings(token) {
       if (!Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, key)) continue;
       out.push({ key: key, value: str_(s[key]) });
     }
-    return { settings: out, hasApiKey: !!getProp_(PROP.ANTHROPIC_API_KEY) };
+    var base = safeWebAppUrl_();
+    return {
+      settings: out,
+      hasApiKey: !!getProp_(PROP.ANTHROPIC_API_KEY),
+      notifyTo: staffRecipients_(),
+      ownerEmail: ownerEmail_(),
+      links: {
+        publicUrl: base,
+        formUrl: base ? base + '?page=form' : '',
+        trackUrl: base ? base + '?page=track' : '',
+        staffUrl: base ? base + '?page=login' : '',
+        spreadsheetUrl: (function () {
+          var id = getProp_(PROP.SPREADSHEET_ID);
+          return id ? 'https://docs.google.com/spreadsheets/d/' + id + '/edit' : '';
+        })(),
+        driveUrl: (function () {
+          var id = getProp_(PROP.ROOT_FOLDER_ID);
+          return id ? 'https://drive.google.com/drive/folders/' + id : '';
+        })()
+      }
+    };
+  });
+}
+
+/** ส่งอีเมลทดสอบไปยังผู้รับแจ้งเตือนทั้งหมด ใช้ตรวจว่าการแจ้งเตือนทำงานจริง */
+function apiAdminTestEmail(token) {
+  return respond_(function () {
+    var me = requireAdmin_(token);
+    var to = staffRecipients_();
+    if (to.length === 0) {
+      throw appError_('ยังไม่มีอีเมลผู้รับแจ้งเตือน กรุณากรอกช่อง "อีเมลเจ้าหน้าที่ที่รับแจ้งเตือน" ก่อน');
+    }
+    var body =
+      '<p>นี่คืออีเมลทดสอบจากระบบขอรับบริการออกแบบสื่อประชาสัมพันธ์</p>' +
+      '<p>หากท่านได้รับอีเมลฉบับนี้ แปลว่าการแจ้งเตือนคำขอใหม่จะส่งถึงท่านได้แน่นอน</p>' +
+      emailTable_([
+        ['ผู้ทดสอบ', escapeHtml_(me.name || me.email)],
+        ['เวลาที่ทดสอบ', escapeHtml_(formatThaiDate_(new Date(), true))],
+        ['ผู้รับทั้งหมด', escapeHtml_(to.join(', '))]
+      ]);
+    sendMail_(to, 'ทดสอบการแจ้งเตือน — ' + APP.NAME,
+      emailShell_('ทดสอบการแจ้งเตือน', APP.ORG, body, '', ''));
+    return { sentTo: to };
   });
 }
 

@@ -1,4 +1,4 @@
-# setup.ps1 — ติดตั้งระบบขอรับบริการออกแบบสื่อประชาสัมพันธ์ขึ้น Google Apps Script
+﻿# setup.ps1 — ติดตั้งระบบขอรับบริการออกแบบสื่อประชาสัมพันธ์ขึ้น Google Apps Script
 # ใช้กับ Windows (PowerShell)   macOS และ Linux ใช้ setup.sh
 #
 #   .\setup.ps1                 สร้างโปรเจกต์ Apps Script ใหม่ให้อัตโนมัติ

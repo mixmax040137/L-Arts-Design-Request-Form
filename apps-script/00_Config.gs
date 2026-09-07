@@ -25,7 +25,8 @@ var PROP = {
   SECRET: 'APP_SECRET',
   ANTHROPIC_API_KEY: 'ANTHROPIC_API_KEY',
   SETUP_AT: 'SETUP_AT',
-  SETUP_KEY: 'SETUP_KEY'
+  SETUP_KEY: 'SETUP_KEY',
+  OWNER_EMAIL: 'OWNER_EMAIL'
 };
 
 /** ชื่อชีตทั้งหมด */
@@ -135,6 +136,7 @@ var DEFAULT_SETTINGS = {
   minLeadDays: '7',
   slaFirstDraftDays: '5',
   notifyEmails: 'pr@arts.tu.ac.th',
+  notifyOwnerAlways: 'true',
   fromName: 'ฝ่ายสื่อสารองค์กร คณะศิลปศาสตร์ มธ.',
   replyTo: 'pr@arts.tu.ac.th',
   maxFileMB: '10',
