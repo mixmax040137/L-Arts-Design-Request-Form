@@ -779,16 +779,29 @@ var Admin = (function () {
       '</div>' +
       '<div class="card-soft p-3 p-md-4 mb-3">' +
         '<div class="fw-semibold mb-2"><i class="bi bi-cpu me-2" style="color:var(--primary)"></i>' +
-          'การเชื่อมต่อ AI</div>' +
-        '<div style="font-size:.87rem;color:var(--text-light)">' +
+          'การเชื่อมต่อ AI สรุป Design Brief</div>' +
+        '<div style="font-size:.87rem;color:var(--text-light)" class="mb-3">' +
           (data.hasApiKey
             ? '<i class="bi bi-check-circle-fill me-1" style="color:var(--success)"></i>' +
-              'ตั้งค่า API key ของ Claude แล้ว ระบบจะใช้ AI สรุป Design Brief'
+              'ตั้งค่า API key ของ Claude แล้ว ระบบใช้ AI สรุป Design Brief ให้อัตโนมัติ'
             : '<i class="bi bi-exclamation-circle me-1" style="color:var(--warning)"></i>' +
               'ยังไม่ได้ตั้งค่า API key ระบบจะสรุป Design Brief ด้วยสูตรสำเร็จแทน') +
         '</div>' +
-        '<div class="form-text mt-2">ตั้งค่า API key ได้ที่ Apps Script โดยเรียกฟังก์ชัน ' +
-          '<code>setAnthropicApiKey(\'sk-ant-...\')</code> เพื่อไม่ให้กุญแจปรากฏบนหน้าเว็บ</div>' +
+        '<div class="row g-2 align-items-end">' +
+          '<div class="col-md-8">' +
+            '<label class="form-label">Claude API key</label>' +
+            '<input type="password" class="form-control form-control-sm" id="ai-key" ' +
+              'autocomplete="off" placeholder="' +
+              (data.hasApiKey ? 'บันทึกไว้แล้ว (พิมพ์เพื่อเปลี่ยนเป็นคีย์ใหม่)' : 'sk-ant-...') + '">' +
+          '</div>' +
+          '<div class="col-md-4 d-flex gap-2">' +
+            '<button class="btn btn-sm btn-brand flex-fill justify-content-center" ' +
+              'onclick="Admin.saveApiKey()"><i class="bi bi-save"></i>บันทึก</button>' +
+            (data.hasApiKey ? '<button class="btn btn-sm btn-ghost" onclick="Admin.clearApiKey()">ลบ</button>' : '') +
+          '</div>' +
+        '</div>' +
+        '<div class="form-text mt-2">สร้างคีย์ได้ที่ console.anthropic.com ' +
+          'ระบบเก็บคีย์ไว้ใน Script Properties และไม่เคยส่งกลับมาแสดงบนหน้าเว็บอีก</div>' +
       '</div>' +
       '<div class="card-soft p-3 p-md-4">' +
         '<div class="d-flex justify-content-between align-items-center mb-3">' +
@@ -813,6 +826,31 @@ var Admin = (function () {
     App.api('apiAdminSaveSettings', [token, patch]).then(function () {
       App.loading(false);
       App.toast('บันทึกการตั้งค่าเรียบร้อย (รีเฟรชหน้าเพื่อให้มีผลกับแบบฟอร์ม)', 'ok');
+    }).catch(handleAuthError);
+  }
+
+  function saveApiKey() {
+    var key = document.getElementById('ai-key').value.trim();
+    if (!key) { App.toast('กรุณากรอก API key', 'err'); return; }
+    App.loading(true, 'กำลังบันทึก API key...');
+    App.api('apiAdminSetApiKey', [token, key]).then(function () {
+      App.loading(false);
+      App.toast('บันทึก API key เรียบร้อย ระบบจะใช้ AI สรุป Design Brief ตั้งแต่คำขอถัดไป', 'ok');
+      loadSettings();
+    }).catch(handleAuthError);
+  }
+
+  function clearApiKey() {
+    App.prompt({
+      title: 'ลบ API key',
+      html: '<p style="font-size:.9rem">หลังลบแล้ว ระบบจะสรุป Design Brief ด้วยสูตรสำเร็จแทน AI</p>',
+      okLabel: 'ลบ API key'
+    }).then(function (ok) {
+      if (!ok) return;
+      return App.api('apiAdminSetApiKey', [token, '']).then(function () {
+        App.toast('ลบ API key เรียบร้อย', 'ok');
+        loadSettings();
+      });
     }).catch(handleAuthError);
   }
 
@@ -914,6 +952,7 @@ var Admin = (function () {
     changeStatus: changeStatus, setDraftUrl: setDraftUrl, assign: assign, addNote: addNote,
     setRevisionLimit: setRevisionLimit, regenerateBrief: regenerateBrief,
     uploadFinal: uploadFinal, deleteFile: deleteFile, saveSettings: saveSettings,
+    saveApiKey: saveApiKey, clearApiKey: clearApiKey,
     editUser: editUser, openChangePassword: openChangePassword, exportCsv: exportCsv
   };
 })();

@@ -1352,6 +1352,149 @@ group('15. ความปลอดภัยของพารามิเตอ
 }
 
 /* ==========================================================================
+   16. ติดตั้งอัตโนมัติและการสร้างบัญชีผู้ดูแลระบบคนแรก
+   ========================================================================== */
+group('16. ติดตั้งอัตโนมัติเมื่อเปิดเว็บแอปครั้งแรก');
+
+{
+  test('เปิดเว็บแอปครั้งแรกแล้วระบบติดตั้งตัวเองครบถ้วน', () => {
+    const app = loadApp();
+    assertEqual(app.state.props.SPREADSHEET_ID, undefined, 'เริ่มต้นต้องยังไม่ติดตั้ง');
+    app.ctx.doGet({ parameter: {} });
+    assert(!!app.state.props.SPREADSHEET_ID, 'ต้องสร้างฐานข้อมูลให้');
+    assert(!!app.state.props.ROOT_FOLDER_ID, 'ต้องสร้างโฟลเดอร์ให้');
+    assert(!!app.state.props.SETUP_KEY, 'ต้องออกรหัสติดตั้ง');
+    assertEqual(app.state.triggers.length, 2, 'ต้องติดตั้งทริกเกอร์ให้');
+  });
+
+  test('ส่งรหัสติดตั้งไปยังอีเมลเจ้าของสคริปต์', () => {
+    const app = loadApp();
+    app.ctx.doGet({ parameter: {} });
+    assertEqual(app.state.outbox.length, 1, 'ต้องส่งอีเมลหนึ่งฉบับ');
+    const mail = app.state.outbox[0];
+    assertEqual(mail.to, 'pr@arts.tu.ac.th');
+    assert(mail.htmlBody.indexOf(app.state.props.SETUP_KEY) >= 0, 'อีเมลต้องมีรหัสติดตั้ง');
+    assert(mail.htmlBody.indexOf('page=setup') >= 0, 'อีเมลต้องมีลิงก์ไปหน้าตั้งค่า');
+  });
+
+  test('เปิดซ้ำไม่ติดตั้งใหม่และไม่ส่งอีเมลซ้ำ', () => {
+    const app = loadApp();
+    app.ctx.doGet({ parameter: {} });
+    const sheetId = app.state.props.SPREADSHEET_ID;
+    const key = app.state.props.SETUP_KEY;
+    app.ctx.doGet({ parameter: {} });
+    app.ctx.doGet({ parameter: { page: 'form' } });
+    assertEqual(app.state.props.SPREADSHEET_ID, sheetId, 'ต้องไม่สร้างฐานข้อมูลใหม่');
+    assertEqual(app.state.props.SETUP_KEY, key, 'รหัสติดตั้งต้องไม่เปลี่ยน');
+    assertEqual(app.state.outbox.length, 1, 'ต้องไม่ส่งอีเมลซ้ำ');
+  });
+
+  test('apiBootstrap บอกว่ายังต้องสร้างบัญชีผู้ดูแลระบบ', () => {
+    const app = loadApp();
+    app.ctx.doGet({ parameter: {} });
+    assertEqual(app.ctx.apiBootstrap().data.needsFirstAdmin, true);
+    app.ctx.createAdmin('pr@arts.tu.ac.th', 'ผู้ดูแล', 'SuperSecret123');
+    assertEqual(app.ctx.apiBootstrap().data.needsFirstAdmin, false);
+  });
+
+  test('สร้างบัญชีแรกด้วยรหัสติดตั้งที่ถูกต้อง', () => {
+    const app = loadApp();
+    app.ctx.doGet({ parameter: {} });
+    const key = app.state.props.SETUP_KEY;
+    const res = app.ctx.apiCreateFirstAdmin(key, 'pr@arts.tu.ac.th', 'ธิติวุฒิ บุญแก้ว', 'FirstAdmin123');
+    assertEqual(res.ok, true);
+    assert(!!app.ctx.login_('pr@arts.tu.ac.th', 'FirstAdmin123').token, 'ต้องเข้าสู่ระบบได้ทันที');
+    assertEqual(app.ctx.findBy_('Users', 'email', 'pr@arts.tu.ac.th').role, 'admin');
+  });
+
+  test('รหัสติดตั้งผิดสร้างบัญชีไม่ได้', () => {
+    const app = loadApp();
+    app.ctx.doGet({ parameter: {} });
+    const res = app.ctx.apiCreateFirstAdmin('WRONGKEY99', 'pr@arts.tu.ac.th', 'ชื่อ', 'Password123');
+    assertEqual(res.ok, false);
+    assert(res.error.indexOf('รหัสติดตั้งไม่ถูกต้อง') >= 0);
+    assertEqual(app.ctx.readAll_('Users').length, 0, 'ต้องไม่สร้างบัญชี');
+  });
+
+  test('รหัสติดตั้งใช้ได้ครั้งเดียว', () => {
+    const app = loadApp();
+    app.ctx.doGet({ parameter: {} });
+    const key = app.state.props.SETUP_KEY;
+    app.ctx.apiCreateFirstAdmin(key, 'pr@arts.tu.ac.th', 'คนแรก', 'FirstAdmin123');
+    assertEqual(app.state.props.SETUP_KEY, undefined, 'ต้องลบรหัสติดตั้งทิ้ง');
+    const again = app.ctx.apiCreateFirstAdmin(key, 'hacker@evil.com', 'ผู้บุกรุก', 'Hacker12345');
+    assertEqual(again.ok, false);
+    assert(again.error.indexOf('มีบัญชีผู้ดูแลอยู่แล้ว') >= 0);
+    assertEqual(app.ctx.readAll_('Users').length, 1, 'ต้องมีบัญชีเดียว');
+  });
+
+  test('ตรวจข้อมูลของบัญชีแรกก่อนสร้าง', () => {
+    const app = loadApp();
+    app.ctx.doGet({ parameter: {} });
+    const key = app.state.props.SETUP_KEY;
+    assert(app.ctx.apiCreateFirstAdmin(key, 'ไม่ใช่อีเมล', 'ชื่อ', 'Password123').error.indexOf('อีเมล') >= 0);
+    assert(app.ctx.apiCreateFirstAdmin(key, 'a@b.com', 'ชื่อ', 'สั้น').error.indexOf('8 ตัวอักษร') >= 0);
+    assert(app.ctx.apiCreateFirstAdmin(key, 'a@b.com', '', 'Password123').error.indexOf('ชื่อ') >= 0);
+    assertEqual(app.ctx.readAll_('Users').length, 0);
+  });
+
+  test('ตั้งอีเมลแจ้งเตือนตามบัญชีแรกให้อัตโนมัติ', () => {
+    const app = loadApp();
+    app.ctx.doGet({ parameter: {} });
+    app.ctx.apiCreateFirstAdmin(app.state.props.SETUP_KEY, 'newpr@arts.tu.ac.th', 'ผู้ดูแล', 'FirstAdmin123');
+    assertEqual(app.ctx.getSetting_('notifyEmails', ''), 'newpr@arts.tu.ac.th');
+    assertEqual(app.ctx.getSetting_('replyTo', ''), 'newpr@arts.tu.ac.th');
+  });
+
+  test('createAdmin จากตัวแก้ไขก็ยกเลิกรหัสติดตั้งเช่นกัน', () => {
+    const app = loadApp();
+    app.ctx.doGet({ parameter: {} });
+    assert(!!app.state.props.SETUP_KEY);
+    app.ctx.createAdmin('pr@arts.tu.ac.th', 'ผู้ดูแล', 'SuperSecret123');
+    assertEqual(app.state.props.SETUP_KEY, undefined);
+  });
+
+  test('doGet ไม่พังแม้ติดตั้งอัตโนมัติล้มเหลว', () => {
+    const app = loadApp();
+    app.ctx.SpreadsheetApp.create = () => { throw new Error('Drive quota exceeded'); };
+    assert(!!app.ctx.doGet({ parameter: {} }), 'ต้องยังคืนหน้าเว็บได้');
+  });
+
+  test('ตั้งค่า API key จากหน้าเว็บได้เฉพาะผู้ดูแลระบบ', () => {
+    const app = bootstrapApp();
+    const adminToken = app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token;
+    app.ctx.saveUser_(adminToken, {
+      email: 'staff@arts.tu.ac.th', name: 'เจ้าหน้าที่', role: 'staff', password: 'StaffPass123'
+    });
+    const staffToken = app.ctx.login_('staff@arts.tu.ac.th', 'StaffPass123').token;
+
+    assertEqual(app.ctx.apiAdminSetApiKey(staffToken, 'sk-ant-abc').ok, false, 'เจ้าหน้าที่ทั่วไปต้องทำไม่ได้');
+    assertEqual(app.ctx.apiAdminSetApiKey('', 'sk-ant-abc').ok, false, 'ไม่มี token ต้องทำไม่ได้');
+
+    const bad = app.ctx.apiAdminSetApiKey(adminToken, 'คีย์มั่ว');
+    assertEqual(bad.ok, false);
+    assert(bad.error.indexOf('sk-ant-') >= 0, 'ต้องตรวจรูปแบบคีย์');
+
+    const ok = app.ctx.apiAdminSetApiKey(adminToken, 'sk-ant-test-123');
+    assertEqual(ok.ok, true);
+    assertEqual(app.state.props.ANTHROPIC_API_KEY, 'sk-ant-test-123');
+    assertEqual(app.ctx.apiAdminSettings(adminToken).data.hasApiKey, true);
+
+    app.ctx.apiAdminSetApiKey(adminToken, '');
+    assertEqual(app.state.props.ANTHROPIC_API_KEY, undefined, 'ส่งค่าว่างคือลบคีย์');
+  });
+
+  test('ไม่คืนค่า API key กลับมาที่หน้าเว็บ', () => {
+    const app = bootstrapApp();
+    const token = app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token;
+    app.ctx.apiAdminSetApiKey(token, 'sk-ant-secret-value');
+    const settings = app.ctx.apiAdminSettings(token);
+    assert(JSON.stringify(settings).indexOf('sk-ant-secret-value') < 0, 'ต้องไม่ส่งคีย์กลับหน้าเว็บ');
+    assertEqual(settings.data.hasApiKey, true, 'บอกได้แค่ว่ามีคีย์แล้ว');
+  });
+}
+
+/* ==========================================================================
    สรุปผล
    ========================================================================== */
 console.log('\n' + '='.repeat(62));

@@ -26,13 +26,24 @@ function jsonForHtml_(obj) {
 function doGet(e) {
   var params = (e && e.parameter) ? e.parameter : {};
   var page = sanitizeParam_(params.page, /[^a-z]/g, 20);
-  var allowedPages = ['home', 'form', 'track', 'login', 'admin'];
+  var allowedPages = ['home', 'form', 'track', 'login', 'admin', 'setup'];
   if (allowedPages.indexOf(page) < 0) page = 'home';
+
+  // ติดตั้งระบบให้อัตโนมัติเมื่อเปิดเว็บแอปครั้งแรก
+  var installError = '';
+  try {
+    ensureInstalled_();
+  } catch (err) {
+    installError = err.message || String(err);
+    console.error('ติดตั้งระบบอัตโนมัติไม่สำเร็จ: ' + installError);
+  }
 
   var boot = {
     page: page,
     jobId: sanitizeParam_(params.job, /[^A-Za-z0-9-]/g, 30).toUpperCase(),
     trackToken: sanitizeParam_(params.t, /[^A-Za-z0-9_-]/g, 64),
+    setupKey: sanitizeParam_(params.k, /[^A-Za-z0-9]/g, 32).toUpperCase(),
+    installError: truncate_(installError, 300),
     appName: APP.NAME,
     org: APP.ORG,
     version: APP.VERSION
@@ -73,6 +84,7 @@ function apiBootstrap() {
   return respond_(function () {
     return {
       app: { name: APP.NAME, org: APP.ORG, orgShort: APP.ORG_SHORT, version: APP.VERSION },
+      needsFirstAdmin: readAll_(SHEET.USERS).length === 0,
       mediaTypes: MEDIA_TYPES,
       departments: DEPARTMENTS,
       channels: CHANNELS,
@@ -178,6 +190,13 @@ function apiApproveDraft(jobId, email, token) {
 }
 
 /* ------------------------------------------------------------ เจ้าหน้าที่ */
+
+/** สร้างบัญชีผู้ดูแลระบบคนแรกผ่านหน้าเว็บ (ใช้รหัสติดตั้งจากอีเมล) */
+function apiCreateFirstAdmin(setupKey, email, name, password) {
+  return respond_(function () {
+    return createFirstAdmin_(setupKey, email, name, password);
+  });
+}
 
 function apiLogin(email, password) {
   return respond_(function () {
@@ -387,6 +406,23 @@ function apiAdminSaveSettings(token, patch) {
       saved++;
     }
     return { saved: saved };
+  });
+}
+
+/** บันทึกหรือลบ API key ของ Claude (เก็บใน Script Properties ไม่แสดงกลับหน้าเว็บ) */
+function apiAdminSetApiKey(token, apiKey) {
+  return respond_(function () {
+    requireAdmin_(token);
+    var key = str_(apiKey);
+    if (!key) {
+      props_().deleteProperty(PROP.ANTHROPIC_API_KEY);
+      return { hasApiKey: false };
+    }
+    if (key.indexOf('sk-ant-') !== 0) {
+      throw appError_('รูปแบบ API key ไม่ถูกต้อง ต้องขึ้นต้นด้วย sk-ant-');
+    }
+    setProp_(PROP.ANTHROPIC_API_KEY, key);
+    return { hasApiKey: true };
   });
 }
 

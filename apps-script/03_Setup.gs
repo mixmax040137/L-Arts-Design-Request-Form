@@ -100,6 +100,14 @@ function setupSystem() {
   result.webAppUrl = safeWebAppUrl_();
   result.hasAdmin = readAll_(SHEET.USERS).length > 0;
 
+  // ยังไม่มีบัญชีเจ้าหน้าที่ ให้ออกรหัสติดตั้งไว้สร้างบัญชีแรกผ่านหน้าเว็บ
+  if (!result.hasAdmin) {
+    result.setupKey = ensureSetupKey_();
+    result.steps.push('ออกรหัสติดตั้งสำหรับสร้างบัญชีผู้ดูแลระบบคนแรก');
+  } else {
+    props_().deleteProperty(PROP.SETUP_KEY);
+  }
+
   var lines = [
     '',
     '==============================================',
@@ -113,8 +121,13 @@ function setupSystem() {
   lines.push('  โฟลเดอร์  : ' + result.driveFolderUrl);
   lines.push('');
   if (!result.hasAdmin) {
-    lines.push('  ขั้นตอนถัดไป: สร้างบัญชีเจ้าหน้าที่ด้วยคำสั่ง');
-    lines.push("    createAdmin('pr@arts.tu.ac.th', 'ชื่อผู้ดูแลระบบ', 'รหัสผ่านที่ต้องการ')");
+    lines.push('  ขั้นตอนถัดไป: เปิดเว็บแอปแล้วสร้างบัญชีผู้ดูแลระบบคนแรก');
+    lines.push('  รหัสติดตั้ง (ใช้ครั้งเดียว) : ' + result.setupKey);
+    if (result.webAppUrl) {
+      lines.push('  ลิงก์สร้างบัญชี : ' + result.webAppUrl + '?page=setup&k=' + result.setupKey);
+    } else {
+      lines.push('  (ยังไม่ได้ Deploy เว็บแอป เมื่อ Deploy แล้วเปิด URL ได้เลย ระบบจะพาไปหน้าสร้างบัญชี)');
+    }
   } else {
     lines.push('  มีบัญชีเจ้าหน้าที่ในระบบแล้ว');
   }
@@ -122,6 +135,117 @@ function setupSystem() {
   Logger.log(lines.join('\n'));
 
   return result;
+}
+
+/** ออกรหัสติดตั้งสำหรับสร้างบัญชีผู้ดูแลระบบคนแรก (ใช้ค่าเดิมถ้ามีอยู่แล้ว) */
+function ensureSetupKey_() {
+  var existing = getProp_(PROP.SETUP_KEY);
+  if (existing) return existing;
+  var key = Utilities.getUuid().replace(/-/g, '').substring(0, 10).toUpperCase();
+  setProp_(PROP.SETUP_KEY, key);
+  return key;
+}
+
+/**
+ * ติดตั้งระบบอัตโนมัติเมื่อเปิดเว็บแอปครั้งแรก
+ * ทำงานด้วยสิทธิ์ของเจ้าของสคริปต์ จึงไม่ต้องเข้าไปกด Run ในตัวแก้ไข
+ * คืน true เมื่อเพิ่งติดตั้งในรอบนี้
+ */
+function ensureInstalled_() {
+  if (getProp_(PROP.SPREADSHEET_ID)) return false;
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(45000)) return false;
+  try {
+    // ตรวจซ้ำหลังได้ล็อก เผื่อมีคนเปิดพร้อมกัน
+    if (getProp_(PROP.SPREADSHEET_ID)) return false;
+    var result = setupSystem();
+    if (result && result.setupKey) {
+      try {
+        sendSetupKeyEmail_(result.setupKey, result.webAppUrl);
+      } catch (err) {
+        Logger.log('ส่งอีเมลรหัสติดตั้งไม่สำเร็จ: ' + err.message);
+      }
+    }
+    return true;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/** ส่งรหัสติดตั้งไปยังเจ้าของสคริปต์ */
+function sendSetupKeyEmail_(setupKey, webAppUrl) {
+  var owner = '';
+  try {
+    owner = str_(Session.getEffectiveUser().getEmail());
+  } catch (err) {
+    owner = '';
+  }
+  if (!owner) owner = splitList_(getSetting_('notifyEmails', DEFAULT_SETTINGS.notifyEmails))[0] || '';
+  if (!owner) return false;
+
+  var link = webAppUrl ? webAppUrl + '?page=setup&k=' + encodeURIComponent(setupKey) : '';
+  var body =
+    '<p>ระบบขอรับบริการออกแบบสื่อประชาสัมพันธ์ติดตั้งตัวเองเรียบร้อยแล้ว ' +
+    'เหลือเพียงขั้นตอนสุดท้ายคือสร้างบัญชีผู้ดูแลระบบคนแรก</p>' +
+    '<div style="text-align:center;margin:18px 0 22px 0">' +
+      '<div style="display:inline-block;border:2px dashed ' + BRAND.primary + ';border-radius:14px;' +
+        'padding:14px 28px;background:#fff7ed">' +
+        '<div style="font-size:12px;color:' + BRAND.textLight + '">รหัสติดตั้ง (ใช้ได้ครั้งเดียว)</div>' +
+        '<div style="font-size:24px;font-weight:700;letter-spacing:3px;color:' + BRAND.primary + '">' +
+          escapeHtml_(setupKey) + '</div>' +
+      '</div>' +
+    '</div>' +
+    emailNotice_('กดปุ่มด้านล่างเพื่อตั้งชื่อและรหัสผ่านของบัญชีผู้ดูแลระบบ ' +
+      'เมื่อสร้างบัญชีเสร็จ รหัสนี้จะถูกยกเลิกทันทีและใช้ซ้ำไม่ได้<br>' +
+      'หากท่านไม่ได้เป็นผู้ติดตั้งระบบนี้ กรุณาอย่าเปิดลิงก์และแจ้งผู้ดูแลระบบทันที');
+
+  return sendMail_(owner, 'สร้างบัญชีผู้ดูแลระบบ — ' + APP.NAME,
+    emailShell_('ติดตั้งระบบเรียบร้อย', APP.ORG, body,
+      link ? 'สร้างบัญชีผู้ดูแลระบบ' : '', link));
+}
+
+/**
+ * สร้างบัญชีผู้ดูแลระบบคนแรกผ่านหน้าเว็บ
+ * ทำได้เฉพาะตอนที่ยังไม่มีบัญชีใดในระบบ และต้องใช้รหัสติดตั้งที่ส่งไปทางอีเมลเท่านั้น
+ */
+function createFirstAdmin_(setupKey, email, name, password) {
+  return withLock_(function () {
+    if (readAll_(SHEET.USERS).length > 0) {
+      throw appError_('ระบบมีบัญชีผู้ดูแลอยู่แล้ว กรุณาเข้าสู่ระบบตามปกติ');
+    }
+    var stored = getProp_(PROP.SETUP_KEY);
+    if (!stored) throw appError_('ไม่พบรหัสติดตั้งในระบบ กรุณาเรียก setupSystem() ใน Apps Script อีกครั้ง');
+    if (!timingSafeEqual_(stored, str_(setupKey).toUpperCase())) {
+      throw appError_('รหัสติดตั้งไม่ถูกต้อง กรุณาตรวจสอบอีเมลที่ระบบส่งไปให้');
+    }
+
+    var mail = str_(email).toLowerCase();
+    if (!isValidEmail_(mail)) throw appError_('รูปแบบอีเมลไม่ถูกต้อง');
+    if (!str_(name)) throw appError_('กรุณากรอกชื่อ-นามสกุล');
+    if (str_(password).length < 8) throw appError_('รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร');
+
+    var salt = Utilities.getUuid();
+    insert_(SHEET.USERS, {
+      email: mail,
+      name: truncate_(name, 150),
+      role: 'admin',
+      passwordHash: hashPassword_(password, salt),
+      salt: salt,
+      active: 'TRUE',
+      createdAt: nowIso_(),
+      lastLoginAt: ''
+    });
+    props_().deleteProperty(PROP.SETUP_KEY);
+
+    // ตั้งอีเมลแจ้งเตือนเจ้าหน้าที่ให้ตรงกับบัญชีแรกโดยอัตโนมัติ
+    if (getSetting_('notifyEmails', '') === DEFAULT_SETTINGS.notifyEmails) {
+      setSetting_('notifyEmails', mail);
+      setSetting_('replyTo', mail);
+    }
+
+    return { created: true, email: mail };
+  });
 }
 
 /** สร้างชีตพร้อมหัวตารางหากยังไม่มี และเติมคอลัมน์ที่ขาด */
@@ -223,6 +347,7 @@ function createAdmin(email, name, password) {
     createdAt: nowIso_(),
     lastLoginAt: ''
   });
+  props_().deleteProperty(PROP.SETUP_KEY);
   Logger.log('สร้างบัญชีเจ้าหน้าที่ ' + mail + ' เรียบร้อย');
   return { created: true, email: mail };
 }

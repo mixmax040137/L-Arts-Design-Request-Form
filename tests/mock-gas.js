@@ -376,8 +376,11 @@ function createRuntime(options) {
   };
 
   const Logger = { log: (msg) => state.logs.push(String(msg)) };
+  state.ownerEmail = opts.ownerEmail === undefined ? 'pr@arts.tu.ac.th' : opts.ownerEmail;
   const Session = {
+    // เว็บแอปแบบ execute as me: ผู้ใช้ที่ไม่ได้ล็อกอินจะได้ค่าว่าง
     getActiveUser: () => ({ getEmail: () => '' }),
+    getEffectiveUser: () => ({ getEmail: () => state.ownerEmail }),
     getScriptTimeZone: () => 'Asia/Bangkok'
   };
 

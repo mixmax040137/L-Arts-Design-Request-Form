@@ -241,6 +241,9 @@ var App = (function () {
 
   function init() {
     loading(true, 'กำลังโหลดระบบ...');
+    if (BOOT && BOOT.installError) {
+      toast('ติดตั้งระบบอัตโนมัติไม่สำเร็จ: ' + BOOT.installError, 'err');
+    }
     api('apiBootstrap').then(function (data) {
       cfg = data;
       renderFlowSteps();
@@ -249,7 +252,14 @@ var App = (function () {
       Admin.init();
       loading(false);
 
+      // ยังไม่มีบัญชีผู้ดูแลระบบ ต้องตั้งค่าครั้งแรกก่อนใช้งานส่วนอื่น
+      if (cfg.needsFirstAdmin) {
+        Setup.start(BOOT ? BOOT.setupKey : '');
+        return;
+      }
+
       var startPage = (BOOT && BOOT.page) ? BOOT.page : 'home';
+      if (startPage === 'setup') startPage = 'home';
       if (startPage === 'track' && BOOT.jobId) {
         go('track');
         Track.openFromLink(BOOT.jobId, BOOT.trackToken);
@@ -272,6 +282,53 @@ var App = (function () {
     getCfg: function () { return cfg; },
     getView: function () { return currentView; }
   };
+})();
+
+/* =========================================================================
+   Setup — ตั้งค่าระบบครั้งแรก สร้างบัญชีผู้ดูแลระบบด้วยรหัสจากอีเมล
+   ========================================================================= */
+var Setup = (function () {
+  function start(setupKey) {
+    if (setupKey) document.getElementById('s-key').value = setupKey;
+    document.getElementById('btn-topbar-action').style.display = 'none';
+    App.go('setup');
+    App.toast('ระบบติดตั้งเรียบร้อยแล้ว เหลือขั้นตอนสุดท้ายคือสร้างบัญชีผู้ดูแลระบบ', 'ok');
+  }
+
+  function submit() {
+    var key = document.getElementById('s-key').value.trim().toUpperCase();
+    var email = document.getElementById('s-email').value.trim();
+    var name = document.getElementById('s-name').value.trim();
+    var password = document.getElementById('s-password').value;
+    var confirm = document.getElementById('s-password2').value;
+
+    var errors = [];
+    if (!key) errors.push('กรุณากรอกรหัสติดตั้งที่ได้รับทางอีเมล');
+    if (!/^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(email)) errors.push('รูปแบบอีเมลไม่ถูกต้อง');
+    if (name.length < 2) errors.push('กรุณากรอกชื่อ-นามสกุล');
+    if (password.length < 8) errors.push('รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร');
+    if (password !== confirm) errors.push('รหัสผ่านทั้งสองช่องไม่ตรงกัน');
+    if (errors.length > 0) { App.toast(errors.join('\n'), 'err'); return; }
+
+    var btn = document.getElementById('s-btn');
+    btn.disabled = true;
+    App.loading(true, 'กำลังสร้างบัญชีผู้ดูแลระบบ...');
+    App.api('apiCreateFirstAdmin', [key, email, name, password]).then(function () {
+      App.loading(false);
+      btn.disabled = false;
+      App.toast('สร้างบัญชีเรียบร้อย กำลังเข้าสู่ระบบให้อัตโนมัติ', 'ok');
+      document.getElementById('l-email').value = email;
+      document.getElementById('l-password').value = password;
+      document.getElementById('btn-topbar-action').style.display = '';
+      Admin.login();
+    }).catch(function (err) {
+      App.loading(false);
+      btn.disabled = false;
+      App.toast(err.message, 'err');
+    });
+  }
+
+  return { start: start, submit: submit };
 })();
 
 document.addEventListener('DOMContentLoaded', App.init);

@@ -43,26 +43,29 @@
 
 อ่านคู่มือฉบับเต็มที่ **[docs/DEPLOY.md](docs/DEPLOY.md)** สรุปสั้น ๆ คือ
 
+ต้องเปิด Apps Script API ที่ <https://script.google.com/home/usersettings> ด้วยบัญชี pr@arts.tu.ac.th ก่อนหนึ่งครั้ง จากนั้น
+
 ```bash
-npm install -g @google/clasp@2
-clasp login                 # เลือกบัญชี pr@arts.tu.ac.th
-cd apps-script
-# สร้าง .clasp.json ใส่ scriptId ของโปรเจกต์ก่อน (ดูขั้นตอน ก.3 ใน DEPLOY.md)
-clasp push -f               # ควรขึ้น Pushed 18 files.
+./setup.sh          # macOS และ Linux
+.\setup.ps1         # Windows (PowerShell)
 ```
 
-จากนั้นในตัวแก้ไข Apps Script
-1. รัน `setupSystem()` — สร้างฐานข้อมูล โฟลเดอร์ และทริกเกอร์
-2. รัน `createAdmin('pr@arts.tu.ac.th', 'ชื่อผู้ดูแล', 'รหัสผ่าน')`
-3. รัน `setAnthropicApiKey('sk-ant-...')` (ทางเลือก สำหรับ AI สรุป Brief)
-4. Deploy เป็น Web app แบบ *Execute as: Me* และ *Who has access: Anyone*
-5. รัน `setupSystem()` อีกครั้งเพื่อบันทึก URL ของเว็บแอป
+สคริปต์จะเข้าสู่ระบบ Google สร้างโปรเจกต์ Apps Script และอัปโหลดโค้ดให้ทั้งหมด
+เหลือทำเองเพียง 2 อย่างที่ Google บังคับให้มีคนกดจริง
+
+1. **Deploy** เป็น Web app แบบ *Execute as: Me* และ *Who has access: Anyone*
+2. **เปิด Web app URL** — ระบบจะติดตั้งฐานข้อมูล โฟลเดอร์ และทริกเกอร์ให้เอง
+   แล้วส่งรหัสติดตั้งไปที่อีเมล pr@arts.tu.ac.th เพื่อสร้างบัญชีผู้ดูแลระบบผ่านหน้าเว็บ
+
+ตั้งค่า Claude API key ได้ที่หน้าเจ้าหน้าที่ → ตั้งค่า (ทางเลือก)
 
 ---
 
 ## โครงสร้างโครงการ
 
 ```
+setup.sh / setup.ps1      สคริปต์ติดตั้งอัตโนมัติ (macOS, Linux / Windows)
+CLAUDE.md                 บริบทโครงการสำหรับเซสชัน Claude Code ใหม่
 apps-script/              โค้ดทั้งหมดที่นำขึ้น Google Apps Script
 ├── appsscript.json       manifest และ OAuth scopes
 ├── 00_Config.gs          ค่าคงที่ สถานะ ประเภทสื่อ โครงสร้างคอลัมน์
@@ -84,7 +87,7 @@ apps-script/              โค้ดทั้งหมดที่นำขึ
 └── ui_Script_Admin.html  หน้าเจ้าหน้าที่ คิวงาน แดชบอร์ด คลังผลงาน ตั้งค่า
 tests/
 ├── mock-gas.js           จำลองสภาพแวดล้อม Apps Script สำหรับทดสอบ
-└── run.js                ชุดทดสอบ 136 รายการ
+└── run.js                ชุดทดสอบ 149 รายการ
 docs/
 ├── DEPLOY.md             คู่มือติดตั้งและใช้งานฉบับเต็ม
 └── pukmud-stock-analysis.md   บันทึกการศึกษาระบบต้นแบบ
@@ -128,7 +131,7 @@ docs/
 npm test        # หรือ  TZ=Asia/Bangkok node tests/run.js
 ```
 
-ชุดทดสอบ 136 รายการครอบคลุม การติดตั้งระบบ การตรวจสอบข้อมูลแบบฟอร์ม การออกเลขที่งาน
+ชุดทดสอบ 149 รายการครอบคลุม การติดตั้งระบบ การตรวจสอบข้อมูลแบบฟอร์ม การออกเลขที่งาน
 การแนบไฟล์ การส่งอีเมล สิทธิ์การเข้าถึงหน้าติดตาม เส้นทางการเปลี่ยนสถานะ รอบการแก้ไข
 การเรียก Claude API และการสำรองเมื่อ API ล้มเหลว งานเบื้องหลัง ระบบเข้าสู่ระบบ สถิติ
 และการป้องกันการแทรกโค้ด — โดยจำลอง Google Apps Script ทั้งหมดจึงรันได้โดยไม่แตะระบบจริง
