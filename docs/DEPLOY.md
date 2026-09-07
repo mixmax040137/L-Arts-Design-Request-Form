@@ -41,18 +41,51 @@
 
 ### วิธี ก (แนะนำ) ใช้ clasp — เร็วและไม่มีพลาด
 
-ต้องมี Node.js บนเครื่อง
+ต้องมี Node.js เวอร์ชัน 18 ขึ้นไปบนเครื่อง
+
+**ก.1 เปิดใช้ Apps Script API (ทำครั้งเดียวต่อบัญชี)**
+
+ล็อกอินเบราว์เซอร์ด้วย **pr@arts.tu.ac.th** แล้วเปิด
+<https://script.google.com/home/usersettings> → เปิดสวิตช์ **Google Apps Script API** เป็น **On**
+หากข้ามขั้นตอนนี้ `clasp push` จะขึ้น error `User has not enabled the Apps Script API`
+
+**ก.2 ติดตั้ง clasp และเข้าสู่ระบบ**
 
 ```bash
-npm install -g @google/clasp
-clasp login                      # เข้าสู่ระบบด้วย pr@arts.tu.ac.th
-cd apps-script
-clasp clone <SCRIPT_ID>          # SCRIPT_ID ดูได้จาก Project Settings
-clasp push -f
+npm install -g @google/clasp@2      # ตรึงรุ่น 2.x ซึ่งคำสั่งตรงกับคู่มือนี้
+clasp --version
+clasp login                          # เบราว์เซอร์จะเปิดขึ้น ให้เลือกบัญชี pr@arts.tu.ac.th
 ```
 
-> `clasp clone` จะสร้างไฟล์ `.clasp.json` ทับของเดิม ให้ตอบ Yes ได้เลย
-> จากนั้น `clasp push -f` จะอัปโหลดไฟล์ทั้งหมดในโฟลเดอร์นี้ขึ้นโปรเจกต์
+> **สำคัญ** หน้าเลือกบัญชีจะแสดงทุกบัญชีที่ล็อกอินอยู่ในเบราว์เซอร์
+> ต้องเลือก **pr@arts.tu.ac.th** เท่านั้น หากเผลอเลือกผิด ให้รัน `clasp logout` แล้ว `clasp login` ใหม่
+
+**ก.3 ผูกโฟลเดอร์โค้ดเข้ากับโปรเจกต์**
+
+คัดลอก **Script ID** จาก Apps Script → **Project Settings** → หัวข้อ *IDs* → ช่อง *Script ID*
+แล้วสร้างไฟล์ `.clasp.json` ไว้ใน **โฟลเดอร์ `apps-script/`** (ไม่ใช่รากโปรเจกต์)
+
+```json
+{
+  "scriptId": "วาง Script ID ที่คัดลอกมาตรงนี้",
+  "rootDir": "."
+}
+```
+
+> อย่าใช้ `clasp clone` เพราะจะดาวน์โหลดไฟล์จากเซิร์ฟเวอร์มาทับ `appsscript.json` ของเรา
+> การสร้าง `.clasp.json` เองปลอดภัยกว่าและได้ผลเหมือนกัน
+> ไฟล์นี้อยู่ใน `.gitignore` แล้ว เพราะเป็นค่าเฉพาะเครื่อง ไม่ต้อง commit
+
+**ก.4 อัปโหลดโค้ด**
+
+```bash
+cd apps-script
+clasp push -f
+clasp open           # เปิดโปรเจกต์ในเบราว์เซอร์เพื่อตรวจสอบ
+```
+
+`-f` คือบังคับเขียนทับและลบไฟล์ในเซิร์ฟเวอร์ที่ไม่มีในเครื่อง (เช่น `Code.gs` ที่ติดมากับโปรเจกต์ใหม่)
+เมื่อสำเร็จจะขึ้นข้อความ `Pushed 18 files.` ครบทั้ง manifest 1 ไฟล์ สคริปต์ 11 ไฟล์ และ HTML 6 ไฟล์
 
 ### วิธี ข คัดลอกทีละไฟล์ในหน้าเว็บ
 
@@ -234,6 +267,10 @@ function ตั้งค่าเอไอ() {
 | อัปโหลดไฟล์ไม่ผ่าน | ไฟล์เกิน 10 MB หรือนามสกุลไม่อยู่ในรายการที่อนุญาต แก้ได้ที่หน้า **ตั้งค่า** |
 | เจ้าหน้าที่เข้าระบบไม่ได้ | กรอกรหัสผิดเกิน 5 ครั้งระบบจะล็อก 15 นาที หรือใช้ `createAdmin` ตั้งรหัสใหม่ |
 | แก้โค้ดแล้วเว็บไม่เปลี่ยน | ต้องกด **Deploy → Manage deployments → แก้ไข → Version: New version** ทุกครั้ง |
+| `clasp push` ขึ้น `User has not enabled the Apps Script API` | ยังไม่ได้เปิดสวิตช์ที่ <https://script.google.com/home/usersettings> (ขั้นตอน ก.1) รอ 1–2 นาทีหลังเปิดแล้วลองใหม่ |
+| `clasp push` ขึ้น `Script ID not found` หรือ `Requested entity was not found` | Script ID ผิด หรือ clasp ล็อกอินอยู่คนละบัญชีกับเจ้าของโปรเจกต์ ตรวจด้วย `clasp login --status` |
+| Windows ขึ้น `clasp.ps1 cannot be loaded because running scripts is disabled` | เปิด PowerShell แบบ Administrator แล้วรัน `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` หรือใช้ `clasp.cmd push -f` แทน |
+| `clasp` ไม่รู้จักคำสั่ง (command not found) | โฟลเดอร์ global bin ของ npm ไม่อยู่ใน PATH ใช้ `npx @google/clasp@2 push -f` แทนได้ |
 
 ---
 

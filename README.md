@@ -44,9 +44,11 @@
 อ่านคู่มือฉบับเต็มที่ **[docs/DEPLOY.md](docs/DEPLOY.md)** สรุปสั้น ๆ คือ
 
 ```bash
-npm install -g @google/clasp
-clasp login                 # เข้าสู่ระบบด้วย pr@arts.tu.ac.th
-cd apps-script && clasp push -f
+npm install -g @google/clasp@2
+clasp login                 # เลือกบัญชี pr@arts.tu.ac.th
+cd apps-script
+# สร้าง .clasp.json ใส่ scriptId ของโปรเจกต์ก่อน (ดูขั้นตอน ก.3 ใน DEPLOY.md)
+clasp push -f               # ควรขึ้น Pushed 18 files.
 ```
 
 จากนั้นในตัวแก้ไข Apps Script
