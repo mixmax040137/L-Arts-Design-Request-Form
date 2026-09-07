@@ -37,8 +37,11 @@ ok "Node.js $(node -v)"
 step "ขั้นที่ 2/5  ตรวจสอบการเข้าสู่ระบบ Google"
 
 cd "$APP_DIR"
-if $CLASP login --status >/dev/null 2>&1; then
-  ACCOUNT="$($CLASP login --status 2>/dev/null | tail -n 1 | tr -d '\r')"
+printf '  %sกำลังเตรียม clasp ครั้งแรกอาจใช้เวลาสักครู่...%s\n' "$DIM" "$RESET"
+# ตรวจจากข้อความที่ได้ ไม่ใช้ exit code เพราะ clasp ไม่รับประกันค่านั้น
+STATUS_OUT="$($CLASP login --status 2>&1 || true)"
+if printf '%s' "$STATUS_OUT" | grep -qE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'; then
+  ACCOUNT="$(printf '%s' "$STATUS_OUT" | grep -oE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' | head -n 1)"
   ok "เข้าสู่ระบบอยู่แล้ว: $ACCOUNT"
   printf '\n  %sหากไม่ใช่บัญชี pr@arts.tu.ac.th ให้กด Ctrl+C แล้วรัน:%s\n' "$YELLOW" "$RESET"
   printf '    npx --yes @google/clasp@2 logout && ./setup.sh\n\n'

@@ -43,9 +43,12 @@ if (-not (Test-Path $AppDir)) { Write-Die "ไม่พบโฟลเดอร�
 Write-Step "ขั้นที่ 2/5  ตรวจสอบการเข้าสู่ระบบ Google"
 
 Set-Location $AppDir
-$status = & npx --yes "@google/clasp@2" login --status 2>&1
-if ($LASTEXITCODE -eq 0) {
-    Write-Ok "เข้าสู่ระบบอยู่แล้ว: $($status | Select-Object -Last 1)"
+Write-Host "  กำลังเตรียม clasp ครั้งแรกอาจใช้เวลาสักครู่..." -ForegroundColor DarkGray
+# ตรวจจากข้อความที่ได้ ไม่ใช้ exit code เพราะ clasp ไม่รับประกันค่านั้น
+$status = (& npx --yes "@google/clasp@2" login --status 2>&1 | Out-String)
+$match = [regex]::Match($status, '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}')
+if ($match.Success) {
+    Write-Ok "เข้าสู่ระบบอยู่แล้ว: $($match.Value)"
     Write-Host "`n  หากไม่ใช่บัญชี pr@arts.tu.ac.th ให้กด Ctrl+C แล้วรัน:" -ForegroundColor Yellow
     Write-Host "    npx --yes `"@google/clasp@2`" logout ; .\setup.ps1"
     Read-Host "`n  กด Enter เพื่อไปต่อ" | Out-Null
