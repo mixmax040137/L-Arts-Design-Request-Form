@@ -1495,6 +1495,76 @@ group('16. ติดตั้งอัตโนมัติเมื่อเป
 }
 
 /* ==========================================================================
+   17. ไฟล์รวมสำหรับติดตั้งด้วยการคัดลอก (dist/)
+   ========================================================================== */
+group('17. ไฟล์รวมสำหรับติดตั้งด้วยการคัดลอก');
+
+{
+  const bundle = require('../scripts/bundle');
+
+  /** โหลดระบบจากไฟล์รวม dist/Code.gs แทนไฟล์แยก */
+  function loadBundledApp(options) {
+    const rt = createRuntime(options);
+    const sandbox = Object.assign({}, rt.globals);
+    sandbox.globalThis = sandbox;
+    const ctx = vm.createContext(sandbox);
+    const code = fs.readFileSync(path.join(__dirname, '..', 'dist', 'Code.gs'), 'utf8');
+    vm.runInContext(code, ctx, { filename: 'dist/Code.gs' });
+    return { ctx, state: rt.state };
+  }
+
+  test('dist/ ตรงกับซอร์สปัจจุบัน', () => {
+    const stale = bundle.check();
+    assertEqual(stale.join(', '), '', 'ไฟล์ที่ไม่ตรง (แก้ด้วย npm run bundle)');
+  });
+
+  test('ไฟล์รวมมีครบทุกไฟล์ที่ต้องนำขึ้น Apps Script', () => {
+    const names = Object.keys(bundle.expectedFiles());
+    assertEqual(names.length, 8, 'ต้องมี 8 ไฟล์');
+    assert(names.indexOf('Code.gs') >= 0 && names.indexOf('appsscript.json') >= 0);
+    for (const html of bundle.HTML_FILES) {
+      assert(names.indexOf(html) >= 0, 'ขาดไฟล์ ' + html);
+    }
+  });
+
+  test('ไฟล์รวมทำงานได้ครบวงจรเหมือนไฟล์แยก', () => {
+    const app = loadBundledApp({ fetchHandler: claudeOkHandler });
+    app.ctx.setupSystem();
+    app.ctx.createAdmin('pr@arts.tu.ac.th', 'ผู้ดูแลระบบ', 'SuperSecret123');
+    app.ctx.setAnthropicApiKey('sk-ant-test-key');
+
+    const created = app.ctx.createRequest_(samplePayload());
+    assert(/^DR-\d{4}-0001$/.test(created.jobId), 'ต้องออกเลขที่คำขอได้');
+    app.ctx.uploadAttachment_(created.jobId,
+      { fileName: 'logo.png', mimeType: 'image/png', dataB64: Buffer.from('x').toString('base64') },
+      'source', 'ผู้ขอ');
+    app.ctx.finalizeRequest_(created.jobId);
+    app.ctx.workerTick();
+    assertEqual(app.ctx.getRequest_(created.jobId).briefStatus, 'DONE');
+
+    app.ctx.changeStatus_(created.jobId, 'DESIGNING', 'เจ้าหน้าที่', {});
+    app.ctx.changeStatus_(created.jobId, 'REVIEW', 'เจ้าหน้าที่', { draftUrl: 'https://canva.com/x' });
+    app.ctx.addRevision_(created.jobId, 'thitiwut@arts.tu.ac.th', '', 'ขอแก้ไขข้อความหัวเรื่อง');
+    app.ctx.changeStatus_(created.jobId, 'REVIEW', 'เจ้าหน้าที่', { draftUrl: 'https://canva.com/x2' });
+    app.ctx.changeStatus_(created.jobId, 'DELIVERED', 'เจ้าหน้าที่', {});
+
+    const view = app.ctx.getPublicView_(created.jobId, 'thitiwut@arts.tu.ac.th', '');
+    assertEqual(view.statusLabel, 'ส่งมอบแล้ว');
+    assertEqual(view.revisionCount, 1);
+    assert(!!app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token, 'เข้าสู่ระบบได้');
+    assertEqual(app.ctx.getStats_({}).totals.delivered, 1);
+  });
+
+  test('ไฟล์รวมติดตั้งตัวเองได้เหมือนกัน', () => {
+    const app = loadBundledApp();
+    app.ctx.doGet({ parameter: {} });
+    assert(!!app.state.props.SPREADSHEET_ID, 'ต้องติดตั้งฐานข้อมูลให้');
+    assert(!!app.state.props.SETUP_KEY, 'ต้องออกรหัสติดตั้ง');
+    assertEqual(app.state.outbox.length, 1, 'ต้องส่งอีเมลรหัสติดตั้ง');
+  });
+}
+
+/* ==========================================================================
    สรุปผล
    ========================================================================== */
 console.log('\n' + '='.repeat(62));

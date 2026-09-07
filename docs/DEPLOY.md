@@ -120,36 +120,40 @@ clasp open           # เปิดโปรเจกต์ในเบราว
 `-f` คือบังคับเขียนทับและลบไฟล์ในเซิร์ฟเวอร์ที่ไม่มีในเครื่อง (เช่น `Code.gs` ที่ติดมากับโปรเจกต์ใหม่)
 เมื่อสำเร็จจะขึ้น `Pushed 18 files.` ครบทั้ง manifest 1 ไฟล์ สคริปต์ 11 ไฟล์ และ HTML 6 ไฟล์
 
-### วิธี ข คัดลอกทีละไฟล์ในหน้าเว็บ
+### วิธี ข คัดลอกด้วยมือ — ใช้ไฟล์รวมในโฟลเดอร์ `dist/`
 
-สร้างไฟล์ในตัวแก้ไข Apps Script ตามรายการนี้ แล้วคัดลอกเนื้อหาจากโฟลเดอร์ `apps-script/` ไปวาง
+ถ้าใช้ Terminal ไม่ได้ ให้คัดลอกจากโฟลเดอร์ **`dist/`** ซึ่งรวมไฟล์ `.gs` ทั้ง 11 ไฟล์
+ให้เหลือไฟล์เดียว จึงคัดลอกแค่ **8 ไฟล์** แทนที่จะเป็น 18 ไฟล์
 
-| ชื่อไฟล์ใน Apps Script | ชนิด | ไฟล์ต้นทาง |
-|---|---|---|
-| `appsscript` | manifest | `appsscript.json` |
-| `00_Config` | Script (.gs) | `00_Config.gs` |
-| `01_Utils` | Script | `01_Utils.gs` |
-| `02_Store` | Script | `02_Store.gs` |
-| `03_Setup` | Script | `03_Setup.gs` |
-| `04_Requests` | Script | `04_Requests.gs` |
-| `05_Files` | Script | `05_Files.gs` |
-| `06_Mailer` | Script | `06_Mailer.gs` |
-| `07_AI` | Script | `07_AI.gs` |
-| `08_Auth` | Script | `08_Auth.gs` |
-| `09_Stats` | Script | `09_Stats.gs` |
-| `10_WebApp` | Script | `10_WebApp.gs` |
-| `page_App` | HTML | `page_App.html` |
-| `ui_Style` | HTML | `ui_Style.html` |
-| `ui_Script_Core` | HTML | `ui_Script_Core.html` |
-| `ui_Script_Form` | HTML | `ui_Script_Form.html` |
-| `ui_Script_Track` | HTML | `ui_Script_Track.html` |
-| `ui_Script_Admin` | HTML | `ui_Script_Admin.html` |
+> ⚠️ อย่านำ `setup.sh` หรือ `setup.ps1` ไปวางใน Apps Script
+> สองไฟล์นั้นเป็นสคริปต์สำหรับรันบน Terminal ของเครื่องตัวเอง ไม่ใช่โค้ดของระบบ
 
-**สำคัญ**
-- ชื่อไฟล์ **HTML ทั้ง 6 ไฟล์ต้องสะกดตรงตามตาราง** เพราะโค้ดเรียกด้วยชื่อเหล่านี้
-- ชื่อไฟล์ `.gs` จะตั้งเป็นอะไรก็ได้ ลำดับไม่มีผลต่อการทำงาน
-  (ที่ใส่เลขนำหน้าเพื่อให้เรียงอ่านง่ายเท่านั้น) หากตัวแก้ไขไม่ยอมรับเลขนำหน้า ให้ตัดออกได้
-- ลบไฟล์ `Code.gs` ที่ติดมากับโปรเจกต์ใหม่ออก
+| ลำดับ | ชื่อไฟล์ใน Apps Script | ชนิดที่ต้องเลือก | คัดลอกจาก |
+|---|---|---|---|
+| 1 | `appsscript` | manifest (มีอยู่แล้ว) | `dist/appsscript.json` |
+| 2 | `Code` | Script (มีอยู่แล้ว) | `dist/Code.gs` |
+| 3 | `page_App` | **HTML** | `dist/page_App.html` |
+| 4 | `ui_Style` | **HTML** | `dist/ui_Style.html` |
+| 5 | `ui_Script_Core` | **HTML** | `dist/ui_Script_Core.html` |
+| 6 | `ui_Script_Form` | **HTML** | `dist/ui_Script_Form.html` |
+| 7 | `ui_Script_Track` | **HTML** | `dist/ui_Script_Track.html` |
+| 8 | `ui_Script_Admin` | **HTML** | `dist/ui_Script_Admin.html` |
+
+**วิธีทำทีละขั้น**
+
+1. เปิดหน้าไฟล์บน GitHub แล้วกดปุ่ม **Raw** หรือไอคอน **Copy raw file** เพื่อคัดลอกทั้งไฟล์
+2. **`appsscript.json`** — คลิกไฟล์ `appsscript.json` ในตัวแก้ไข → กด Ctrl+A → วางทับ → Ctrl+S
+   (ถ้าไม่เห็นไฟล์นี้ ให้ไปที่ Project Settings แล้วติ๊ก *Show "appsscript.json" manifest file in editor*)
+3. **`Code.gs`** — คลิกไฟล์ `Code.gs` → Ctrl+A → วางทับด้วยเนื้อหาของ `dist/Code.gs` → Ctrl+S
+   (ไฟล์นี้ยาวประมาณ 4,000 บรรทัด ให้รอจนวางเสร็จก่อนกดบันทึก)
+4. **ไฟล์ HTML อีก 6 ไฟล์** — กด **+** ข้างคำว่า Files → เลือก **HTML** → พิมพ์ชื่อตามตาราง
+   (ไม่ต้องพิมพ์ `.html` ระบบเติมให้เอง) → วางเนื้อหา → Ctrl+S
+
+**สำคัญ** ชื่อไฟล์ HTML ทั้ง 6 ไฟล์ต้องสะกดตรงตามตารางเป๊ะ เพราะโค้ดเรียกด้วยชื่อเหล่านี้
+ส่วนไฟล์ `.gs` จะตั้งชื่อว่าอะไรก็ได้
+
+> โฟลเดอร์ `dist/` สร้างอัตโนมัติจากซอร์สด้วยคำสั่ง `npm run bundle`
+> และมีเทสต์ตรวจทุกครั้งว่าทำงานเหมือนไฟล์แยกทุกประการ
 
 ---
 

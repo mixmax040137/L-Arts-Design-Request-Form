@@ -4,7 +4,8 @@
   "description": "ระบบขอรับบริการออกแบบสื่อประชาสัมพันธ์ ฝ่ายสื่อสารองค์กร คณะศิลปศาสตร์ มหาวิทยาลัยธรรมศาสตร์ (Google Apps Script + Google Sheets + Google Drive)",
   "private": true,
   "scripts": {
-    "test": "TZ=Asia/Bangkok node tests/run.js"
+    "bundle": "node scripts/bundle.js",
+    "test": "node scripts/bundle.js && TZ=Asia/Bangkok node tests/run.js"
   },
   "engines": {
     "node": ">=18"

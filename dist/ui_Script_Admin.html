@@ -1,0 +1,959 @@
+<script>
+/* =========================================================================
+   ui_Script_Admin — หน้าเจ้าหน้าที่: คิวงาน แดชบอร์ด คลังผลงาน และตั้งค่า
+   ========================================================================= */
+var Admin = (function () {
+  var TOKEN_KEY = 'lartsDesignToken';
+  var token = '';
+  var user = null;
+  var activeTab = 'queue';
+  var queueCache = [];
+  var currentJob = null;
+  var debounceTimer = null;
+
+  /* ------------------------------------------------------------- Session */
+
+  function init() {
+    try { token = localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { token = ''; }
+
+    var statusSelect = document.getElementById('q-status');
+    statusSelect.innerHTML = '<option value="">ทุกสถานะ</option>' +
+      App.getCfg().statusFlow.map(function (s) {
+        return '<option value="' + s.key + '">' + App.esc(s.label) + '</option>';
+      }).join('') +
+      '<option value="INFO_NEEDED">รอข้อมูลเพิ่มเติม</option>' +
+      '<option value="CANCELLED">ยกเลิกคำขอ</option>';
+
+    var tabs = document.querySelectorAll('#admin-tabs .tab-pill');
+    for (var i = 0; i < tabs.length; i++) {
+      tabs[i].addEventListener('click', function () { switchTab(this.getAttribute('data-tab')); });
+    }
+
+    if (token) {
+      App.api('apiVerifySession', [token]).then(function (u) {
+        user = u;
+        showUserMenu();
+      }).catch(function () {
+        token = '';
+        try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+      });
+    }
+  }
+
+  function isLoggedIn() { return !!token && !!user; }
+
+  function showUserMenu() {
+    document.getElementById('user-menu').style.display = user ? '' : 'none';
+    if (user) document.getElementById('user-name').textContent = user.name || user.email;
+  }
+
+  function login() {
+    var email = document.getElementById('l-email').value.trim();
+    var password = document.getElementById('l-password').value;
+    if (!email || !password) { App.toast('กรุณากรอกอีเมลและรหัสผ่าน', 'err'); return; }
+    var btn = document.getElementById('l-btn');
+    btn.disabled = true;
+    App.loading(true, 'กำลังตรวจสอบสิทธิ์...');
+    App.api('apiLogin', [email, password]).then(function (res) {
+      token = res.token;
+      user = res.user;
+      try { localStorage.setItem(TOKEN_KEY, token); } catch (e) {}
+      App.loading(false);
+      btn.disabled = false;
+      document.getElementById('l-password').value = '';
+      showUserMenu();
+      App.toast('ยินดีต้อนรับ ' + (user.name || user.email), 'ok');
+      App.go('admin');
+    }).catch(function (err) {
+      App.loading(false);
+      btn.disabled = false;
+      App.toast(err.message, 'err');
+    });
+  }
+
+  function logout() {
+    token = '';
+    user = null;
+    try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+    showUserMenu();
+    App.toast('ออกจากระบบเรียบร้อย', 'ok');
+    App.go('home');
+  }
+
+  function handleAuthError(err) {
+    App.loading(false);
+    if (err && /เซสชัน|สิทธิ์|เข้าสู่ระบบ/.test(err.message)) {
+      token = '';
+      user = null;
+      try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+      showUserMenu();
+      App.go('login');
+    }
+    App.toast(err.message, 'err');
+  }
+
+  function onEnter() {
+    if (!isLoggedIn()) { App.go('login'); return; }
+    switchTab(activeTab);
+  }
+
+  function switchTab(tab) {
+    activeTab = tab;
+    var pills = document.querySelectorAll('#admin-tabs .tab-pill');
+    for (var i = 0; i < pills.length; i++) {
+      pills[i].classList.toggle('on', pills[i].getAttribute('data-tab') === tab);
+    }
+    ['queue', 'dashboard', 'assets', 'settings'].forEach(function (name) {
+      document.getElementById('admin-' + name).classList.toggle('d-none', name !== tab);
+    });
+    var titles = {
+      queue: 'คิวงานออกแบบ', dashboard: 'แดชบอร์ดสรุปผลการให้บริการ',
+      assets: 'คลังผลงาน', settings: 'ตั้งค่าระบบ'
+    };
+    document.getElementById('admin-title').textContent = titles[tab] || '';
+    if (tab === 'queue') loadQueue();
+    if (tab === 'dashboard') loadDashboard();
+    if (tab === 'assets') loadAssets();
+    if (tab === 'settings') loadSettings();
+  }
+
+  /* --------------------------------------------------------------- คิวงาน */
+
+  function debouncedLoadQueue() {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(loadQueue, 400);
+  }
+
+  function loadQueue() {
+    if (!isLoggedIn()) return;
+    var filter = {
+      q: document.getElementById('q-search').value.trim(),
+      status: document.getElementById('q-status').value,
+      priority: document.getElementById('q-priority').value
+    };
+    App.loading(true, 'กำลังโหลดคิวงาน...');
+    App.api('apiAdminList', [token, filter]).then(function (rows) {
+      App.loading(false);
+      queueCache = rows;
+      renderQueue(rows);
+    }).catch(handleAuthError);
+  }
+
+  function renderQueue(rows) {
+    var body = document.getElementById('queue-body');
+    document.getElementById('queue-empty').classList.toggle('d-none', rows.length > 0);
+    body.innerHTML = rows.map(function (r) {
+      var dueHtml = App.shortDate(r.dueDate);
+      if (r.daysLeft !== null && r.status !== 'DELIVERED' && r.status !== 'CANCELLED') {
+        var color = r.daysLeft < 0 ? 'var(--danger)' : (r.daysLeft <= 3 ? 'var(--warning)' : 'var(--text-light)');
+        var text = r.daysLeft < 0 ? 'เกิน ' + Math.abs(r.daysLeft) + ' วัน' : 'อีก ' + r.daysLeft + ' วัน';
+        dueHtml += '<div style="font-size:.72rem;color:' + color + '">' + text + '</div>';
+      }
+      return '<tr class="row-click" onclick="Admin.openJob(\'' + r.jobId + '\')">' +
+        '<td><strong style="color:var(--primary)">' + App.esc(r.jobId) + '</strong>' +
+          '<div style="font-size:.72rem;color:var(--text-light)">' + App.shortDate(r.createdAt) + '</div></td>' +
+        '<td><div style="font-weight:500">' + App.esc(r.projectName) + '</div>' +
+          '<div style="font-size:.76rem;color:var(--text-light)">' + App.esc(r.requesterName) +
+          ' &middot; ' + App.esc(r.department) + '</div></td>' +
+        '<td style="white-space:nowrap">' + dueHtml + '</td>' +
+        '<td><span class="badge-status" style="background:' + r.statusColor + '">' +
+          App.esc(r.statusLabel) + '</span></td>' +
+        '<td><span style="color:' + r.priorityColor + ';font-size:.82rem">' +
+          (r.overdue ? '<i class="bi bi-exclamation-triangle-fill me-1"></i>' : '') +
+          App.esc(r.priorityLabel) + '</span></td>' +
+        '<td style="font-size:.82rem">' + r.revisionCount + '/' + r.revisionLimit + '</td>' +
+        '<td class="text-end"><i class="bi bi-chevron-right text-secondary"></i></td>' +
+        '</tr>';
+    }).join('');
+  }
+
+  /* ------------------------------------------------------- รายละเอียดงาน */
+
+  function openJob(jobId) {
+    App.loading(true, 'กำลังโหลดรายละเอียด...');
+    App.api('apiAdminGet', [token, jobId]).then(function (data) {
+      App.loading(false);
+      currentJob = data;
+      renderJobModal(data);
+      bootstrap.Modal.getOrCreateInstance(document.getElementById('jobModal')).show();
+    }).catch(handleAuthError);
+  }
+
+  function reloadJob() {
+    if (!currentJob) return;
+    App.api('apiAdminGet', [token, currentJob.request.jobId]).then(function (data) {
+      currentJob = data;
+      renderJobModal(data);
+      loadQueue();
+    }).catch(handleAuthError);
+  }
+
+  function detail(label, value, isHtml) {
+    if (!value) return '';
+    return '<div class="detail-label">' + App.esc(label) + '</div>' +
+      '<div class="detail-value">' + (isHtml ? value : App.nl2br(value)) + '</div>';
+  }
+
+  function renderJobModal(data) {
+    var r = data.request;
+    document.getElementById('jm-title').innerHTML =
+      '<span style="color:var(--primary)">' + App.esc(r.jobId) + '</span> ' +
+      '<span style="font-weight:400;font-size:.95rem">' + App.esc(r.projectName) + '</span>';
+
+    var statusButtons = r.nextStatuses.map(function (s) {
+      return '<button class="btn btn-sm btn-ghost" onclick="Admin.changeStatus(\'' + s.key + '\')">' +
+        '<i class="bi bi-arrow-right-circle me-1"></i>' + App.esc(s.label) + '</button>';
+    }).join('');
+
+    var missing = r.briefMissing ? r.briefMissing.split(' | ').filter(function (x) { return !!x; }) : [];
+    var briefBox = r.briefStatus === 'DONE'
+      ? '<div class="brief-box">' + App.esc(r.briefText) + '</div>' +
+        (missing.length > 0 ?
+          '<div class="missing-box mt-2"><div class="fw-semibold mb-1" style="color:var(--danger)">' +
+          '<i class="bi bi-question-circle me-1"></i>ข้อมูลที่ยังขาด (สอบถามผู้ขอในคราวเดียว)</div>' +
+          '<ul class="mb-0" style="padding-left:1.1rem">' +
+          missing.map(function (m) { return '<li>' + App.esc(m) + '</li>'; }).join('') + '</ul></div>' : '') +
+        '<div class="mt-2" style="font-size:.75rem;color:var(--text-light)">สรุปโดย ' +
+        (r.briefSource === 'AI' ? 'AI (Claude)' : 'ระบบอัตโนมัติ') + ' เมื่อ ' +
+        App.thaiDate(r.briefGeneratedAt, true) + '</div>'
+      : '<div class="text-center py-4" style="background:#fff;border:1px dashed var(--border);border-radius:14px">' +
+        '<i class="bi bi-hourglass-split" style="font-size:1.6rem;color:var(--text-light)"></i>' +
+        '<div style="font-size:.87rem;color:var(--text-light);margin-top:.5rem">' +
+        (r.briefStatus === 'ERROR' ? 'สรุป Design Brief ไม่สำเร็จ' : 'ระบบกำลังสรุป Design Brief') +
+        '</div></div>';
+
+    var attachments = data.attachments;
+    var sourceFiles = attachments.filter(function (f) { return f.kind === 'source'; });
+    var finalFiles = attachments.filter(function (f) { return f.kind !== 'source'; });
+
+    function fileRows(list, canDelete) {
+      if (list.length === 0) return '<div style="font-size:.83rem;color:var(--text-light)">ไม่มีไฟล์</div>';
+      return list.map(function (f) {
+        return '<div class="file-row">' +
+          '<i class="bi bi-file-earmark" style="color:var(--primary)"></i>' +
+          '<a href="' + App.esc(f.fileUrl) + '" target="_blank" class="flex-grow-1 text-truncate">' +
+            App.esc(f.fileName) + '</a>' +
+          '<span style="font-size:.75rem;color:var(--text-light)">' + App.esc(f.sizeLabel) + '</span>' +
+          (canDelete ? '<button class="btn btn-sm btn-link text-danger p-0 ms-1" ' +
+            'onclick="Admin.deleteFile(\'' + f.id + '\')"><i class="bi bi-trash"></i></button>' : '') +
+          '</div>';
+      }).join('');
+    }
+
+    var revisionsHtml = data.revisions.length === 0
+      ? '<div style="font-size:.83rem;color:var(--text-light)">ยังไม่มีการขอแก้ไข</div>'
+      : data.revisions.map(function (v) {
+          return '<div class="mb-2 pb-2" style="border-bottom:1px dashed var(--border)">' +
+            '<div class="d-flex justify-content-between"><span class="badge-soft">รอบที่ ' + v.round + '</span>' +
+            '<span style="font-size:.74rem;color:var(--text-light)">' + App.thaiDate(v.createdAt, true) +
+            '</span></div><div style="font-size:.85rem;margin-top:.3rem">' + App.nl2br(v.comment) +
+            '</div></div>';
+        }).join('');
+
+    var timelineHtml = data.timeline.slice().reverse().map(function (t) {
+      return '<div class="timeline-item"><div class="tl-dot"><i class="bi bi-dot"></i></div>' +
+        '<div class="tl-body"><div>' + App.esc(t.detail || t.action) + '</div>' +
+        '<div class="tl-time">' + App.thaiDate(t.at, true) + ' &middot; ' +
+        App.esc(t.actor || 'ระบบ') + '</div></div></div>';
+    }).join('');
+
+    document.getElementById('jm-body').innerHTML =
+    '<div class="row g-3">' +
+      '<div class="col-lg-7">' +
+        '<div class="card-soft p-3 p-md-4 mb-3">' +
+          '<div class="d-flex flex-wrap gap-2 align-items-center mb-3">' +
+            '<span class="badge-status" style="background:' + r.statusColor + '">' +
+              App.esc(r.statusLabel) + '</span>' +
+            '<span class="badge-soft" style="color:' + r.priorityColor + '">' +
+              App.esc(r.priorityLabel) + '</span>' +
+            '<span class="badge-soft">แก้ไข ' + r.revisionCount + '/' + r.revisionLimit + ' รอบ</span>' +
+            (r.assignedTo ? '<span class="badge-soft"><i class="bi bi-person-check me-1"></i>' +
+              App.esc(r.assignedTo) + '</span>' : '') +
+          '</div>' +
+          '<div class="d-flex flex-wrap gap-2 mb-3">' + statusButtons +
+            '<button class="btn btn-sm btn-ghost" onclick="Admin.assign()">' +
+              '<i class="bi bi-person-plus me-1"></i>มอบหมาย</button>' +
+            '<button class="btn btn-sm btn-ghost" onclick="Admin.addNote()">' +
+              '<i class="bi bi-sticky me-1"></i>บันทึกภายใน</button>' +
+            '<button class="btn btn-sm btn-ghost" onclick="Admin.setRevisionLimit()">' +
+              '<i class="bi bi-sliders me-1"></i>รอบแก้ไข</button>' +
+          '</div>' +
+          '<div class="row g-2" style="font-size:.85rem">' +
+            '<div class="col-6"><div class="detail-label">ผู้ประสานงาน</div>' +
+              '<div>' + App.esc(r.requesterName) + '</div></div>' +
+            '<div class="col-6"><div class="detail-label">หน่วยงาน</div>' +
+              '<div>' + App.esc(r.department) + '</div></div>' +
+            '<div class="col-6"><div class="detail-label">อีเมล</div>' +
+              '<div><a href="mailto:' + App.esc(r.requesterEmail) + '">' +
+              App.esc(r.requesterEmail) + '</a></div></div>' +
+            '<div class="col-6"><div class="detail-label">โทรศัพท์</div>' +
+              '<div>' + App.esc(r.requesterPhone) +
+              (r.lineId ? ' &middot; LINE: ' + App.esc(r.lineId) : '') + '</div></div>' +
+            '<div class="col-6"><div class="detail-label">ยื่นคำขอ</div>' +
+              '<div>' + App.thaiDate(r.createdAt, true) + '</div></div>' +
+            '<div class="col-6"><div class="detail-label">กำหนดใช้งาน</div>' +
+              '<div>' + App.thaiDate(r.dueDate) + '</div></div>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="card-soft p-3 p-md-4 mb-3">' +
+          '<div class="d-flex justify-content-between align-items-center mb-3">' +
+            '<div class="fw-semibold"><i class="bi bi-cpu me-2" style="color:var(--primary)"></i>Design Brief</div>' +
+            '<button class="btn btn-sm btn-ghost py-1" onclick="Admin.regenerateBrief()">' +
+              '<i class="bi bi-arrow-clockwise me-1"></i>สรุปใหม่</button>' +
+          '</div>' + briefBox +
+        '</div>' +
+
+        '<div class="card-soft p-3 p-md-4 mb-3">' +
+          '<div class="fw-semibold mb-3"><i class="bi bi-card-text me-2" style="color:var(--primary)"></i>' +
+            'ข้อมูลจากแบบฟอร์ม</div>' +
+          detail('วัตถุประสงค์', r.objective) +
+          detail('กลุ่มเป้าหมาย', r.targetAudience) +
+          detail('ข้อความหลัก', r.keyMessage) +
+          detail('ข้อความบังคับบนชิ้นงาน', r.mandatoryText) +
+          detail('ช่องทางเผยแพร่', r.channels) +
+          detail('วันจัดกิจกรรม', r.eventDate ? App.thaiDate(r.eventDate) : '') +
+          (r.referenceUrl ? detail('ตัวอย่างอ้างอิง',
+            '<a href="' + App.esc(r.referenceUrl) + '" target="_blank">' +
+            App.esc(r.referenceUrl) + '</a>', true) : '') +
+          detail('หมายเหตุ', r.notes) +
+          (r.rushReason ? '<div class="missing-box">' +
+            '<div class="fw-semibold mb-1" style="color:var(--danger)">เหตุผลความเร่งด่วน</div>' +
+            App.nl2br(r.rushReason) + '</div>' : '') +
+          '<div class="detail-label mt-3">รายการชิ้นงาน</div>' +
+          '<ul style="font-size:.87rem;padding-left:1.1rem;line-height:1.9">' +
+            data.deliverables.map(function (d) {
+              return '<li>' + App.esc(d.mediaLabel) + ' &middot; ' + App.esc(d.size) +
+                ' &middot; ' + d.quantity + ' ชิ้น' +
+                (d.note ? '<div style="font-size:.78rem;color:var(--text-light)">' +
+                  App.esc(d.note) + '</div>' : '') + '</li>';
+            }).join('') +
+          '</ul>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="col-lg-5">' +
+        '<div class="card-soft p-3 p-md-4 mb-3">' +
+          '<div class="fw-semibold mb-3"><i class="bi bi-link-45deg me-2" style="color:var(--primary)"></i>' +
+            'ลิงก์ร่างชิ้นงาน</div>' +
+          (r.draftUrl
+            ? '<a href="' + App.esc(r.draftUrl) + '" target="_blank" class="d-block text-truncate mb-2">' +
+              App.esc(r.draftUrl) + '</a>'
+            : '<div style="font-size:.83rem;color:var(--text-light)" class="mb-2">ยังไม่ได้ระบุลิงก์ร่าง</div>') +
+          '<button class="btn btn-sm btn-ghost" onclick="Admin.setDraftUrl()">' +
+            '<i class="bi bi-pencil me-1"></i>' + (r.draftUrl ? 'แก้ไขลิงก์' : 'เพิ่มลิงก์ร่าง') + '</button>' +
+          '<div class="form-text mt-2">ใช้ลิงก์ Canva, Google Drive หรือ Adobe ที่เปิดให้แสดงความเห็นได้</div>' +
+        '</div>' +
+
+        '<div class="card-soft p-3 p-md-4 mb-3">' +
+          '<div class="fw-semibold mb-3"><i class="bi bi-folder2-open me-2" style="color:var(--primary)"></i>' +
+            'ไฟล์จากผู้ขอรับบริการ</div>' +
+          fileRows(sourceFiles, false) +
+          '<a href="' + App.esc(r.folderUrl) + '" target="_blank" class="btn btn-sm btn-ghost mt-2">' +
+            '<i class="bi bi-box-arrow-up-right me-1"></i>เปิดโฟลเดอร์ใน Drive</a>' +
+        '</div>' +
+
+        '<div class="card-soft p-3 p-md-4 mb-3">' +
+          '<div class="fw-semibold mb-3"><i class="bi bi-file-earmark-check me-2" style="color:var(--success)"></i>' +
+            'ไฟล์ส่งมอบ</div>' +
+          fileRows(finalFiles, true) +
+          '<input type="file" id="jm-final-file" class="d-none" multiple ' +
+            'onchange="Admin.uploadFinal(this.files)">' +
+          '<button class="btn btn-sm btn-brand mt-2" ' +
+            'onclick="document.getElementById(\'jm-final-file\').click()">' +
+            '<i class="bi bi-upload"></i>อัปโหลดไฟล์ส่งมอบ</button>' +
+        '</div>' +
+
+        '<div class="card-soft p-3 p-md-4 mb-3">' +
+          '<div class="fw-semibold mb-3"><i class="bi bi-arrow-repeat me-2" style="color:var(--purple)"></i>' +
+            'ข้อแก้ไขจากผู้ขอ</div>' + revisionsHtml +
+        '</div>' +
+
+        '<div class="card-soft p-3 p-md-4">' +
+          '<div class="fw-semibold mb-3"><i class="bi bi-clock-history me-2" style="color:var(--primary)"></i>' +
+            'ประวัติการดำเนินงาน</div>' +
+          '<div style="max-height:320px;overflow-y:auto">' + timelineHtml + '</div>' +
+          (r.trackUrl ? '<div class="mt-3 pt-3" style="border-top:1px solid var(--border)">' +
+            '<div class="detail-label">ลิงก์ติดตามของผู้ขอรับบริการ</div>' +
+            '<div class="text-truncate"><a href="' + App.esc(r.trackUrl) + '" target="_blank" ' +
+            'style="font-size:.78rem">' + App.esc(r.trackUrl) + '</a></div></div>' : '') +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  }
+
+  /* ------------------------------------------------------ การกระทำกับงาน */
+
+  function changeStatus(toStatus) {
+    var config = {
+      REVIEW: {
+        title: 'ส่งร่างให้ตรวจ',
+        html: '<div class="rules-box mb-3" style="font-size:.83rem">' +
+          'ตรวจสอบให้แน่ใจว่าลิงก์ด้านล่างชี้ไปยังร่างเวอร์ชันล่าสุด ' +
+          'ผู้ขอรับบริการจะได้รับลิงก์นี้ทางอีเมลเพื่อตรวจและแจ้งจุดแก้ไข</div>',
+        field: {
+          label: 'ลิงก์ร่างชิ้นงาน', required: true, type: 'url',
+          value: currentJob.request.draftUrl, placeholder: 'https://...',
+          hint: 'ใช้ลิงก์ Canva, Google Drive หรือ Adobe ที่เปิดให้แสดงความเห็นได้'
+        }
+      },
+      INFO_NEEDED: {
+        title: 'ขอข้อมูลเพิ่มเติม',
+        field: {
+          label: 'ระบุข้อมูลที่ต้องการเพิ่มเติม', required: true, type: 'textarea', rows: 5,
+          placeholder: 'พิมพ์บรรทัดละ 1 รายการ เพื่อส่งถามผู้ขอรับบริการในคราวเดียว'
+        }
+      },
+      CANCELLED: {
+        title: 'ยกเลิกคำขอ',
+        field: { label: 'เหตุผลในการยกเลิก', required: true, type: 'textarea', rows: 3 }
+      },
+      DELIVERED: {
+        title: 'ส่งมอบงาน',
+        html: '<div class="rules-box mb-3" style="font-size:.83rem">' +
+          'กรุณาอัปโหลดไฟล์ฉบับสมบูรณ์ให้ครบก่อนส่งมอบ ระบบจะส่งลิงก์ไฟล์ทั้งหมดไปยังอีเมลของผู้ขอรับบริการ</div>',
+        field: { label: 'ข้อความถึงผู้ขอรับบริการ (ถ้ามี)', type: 'textarea', rows: 3 }
+      }
+    };
+    var c = config[toStatus] || {
+      title: 'เปลี่ยนสถานะงาน',
+      field: { label: 'หมายเหตุ (ถ้ามี)', type: 'textarea', rows: 3 }
+    };
+
+    App.prompt({
+      title: c.title, html: c.html || '', field: c.field, okLabel: 'ยืนยัน'
+    }).then(function (value) {
+      if (value === null) return;
+      var options = { detail: typeof value === 'string' ? value : '' };
+      if (toStatus === 'REVIEW') { options.draftUrl = value; options.detail = ''; }
+      if (toStatus === 'CANCELLED') { options.cancelReason = value; }
+      App.loading(true, 'กำลังบันทึก...');
+      return App.api('apiAdminChangeStatus', [token, currentJob.request.jobId, toStatus, options])
+        .then(function () {
+          App.loading(false);
+          App.toast('เปลี่ยนสถานะเรียบร้อย และส่งอีเมลแจ้งผู้ขอรับบริการแล้ว', 'ok');
+          reloadJob();
+        });
+    }).catch(handleAuthError);
+  }
+
+  function setDraftUrl() {
+    App.prompt({
+      title: 'ลิงก์ร่างชิ้นงาน',
+      field: {
+        label: 'ลิงก์ร่างชิ้นงาน', required: true, type: 'url',
+        value: currentJob.request.draftUrl, placeholder: 'https://...'
+      }
+    }).then(function (url) {
+      if (!url) return;
+      App.loading(true, 'กำลังบันทึกลิงก์...');
+      return App.api('apiAdminSetDraftUrl', [token, currentJob.request.jobId, url]).then(function () {
+        App.loading(false);
+        App.toast('บันทึกลิงก์ร่างเรียบร้อย ' +
+          'เมื่อพร้อมให้ตรวจ กดปุ่ม "รอตรวจร่าง" เพื่อแจ้งผู้ขอรับบริการ', 'ok');
+        reloadJob();
+      });
+    }).catch(handleAuthError);
+  }
+
+  function assign() {
+    App.prompt({
+      title: 'มอบหมายผู้รับผิดชอบ',
+      field: {
+        label: 'ชื่อผู้รับผิดชอบ', value: currentJob.request.assignedTo,
+        placeholder: 'เช่น ธิติวุฒิ บุญแก้ว'
+      }
+    }).then(function (name) {
+      if (name === null) return;
+      return App.api('apiAdminAssign', [token, currentJob.request.jobId, name]).then(function () {
+        App.toast('บันทึกผู้รับผิดชอบเรียบร้อย', 'ok');
+        reloadJob();
+      });
+    }).catch(handleAuthError);
+  }
+
+  function addNote() {
+    App.prompt({
+      title: 'บันทึกภายใน',
+      html: '<div class="form-text mb-2">บันทึกนี้เห็นเฉพาะเจ้าหน้าที่ ไม่แสดงให้ผู้ขอรับบริการ</div>',
+      field: { label: 'ข้อความ', required: true, type: 'textarea', rows: 4 }
+    }).then(function (text) {
+      if (!text) return;
+      return App.api('apiAdminNote', [token, currentJob.request.jobId, text]).then(function () {
+        App.toast('บันทึกเรียบร้อย', 'ok');
+        reloadJob();
+      });
+    }).catch(handleAuthError);
+  }
+
+  function setRevisionLimit() {
+    App.prompt({
+      title: 'กำหนดจำนวนรอบแก้ไข',
+      field: {
+        label: 'จำนวนรอบแก้ไขสูงสุดของงานนี้', type: 'number',
+        value: String(currentJob.request.revisionLimit), required: true,
+        hint: 'ใช้เมื่อจำเป็นต้องขยายสิทธิ์แก้ไขให้งานใบนี้เป็นกรณีพิเศษ'
+      }
+    }).then(function (value) {
+      if (!value) return;
+      return App.api('apiAdminSetRevisionLimit', [token, currentJob.request.jobId, value]).then(function () {
+        App.toast('ปรับจำนวนรอบแก้ไขเรียบร้อย', 'ok');
+        reloadJob();
+      });
+    }).catch(handleAuthError);
+  }
+
+  function regenerateBrief() {
+    App.loading(true, 'กำลังสรุป Design Brief ใหม่...');
+    App.api('apiAdminRegenerateBrief', [token, currentJob.request.jobId]).then(function (res) {
+      App.loading(false);
+      App.toast('สรุป Design Brief ใหม่เรียบร้อย (' +
+        (res.source === 'AI' ? 'ด้วย AI' : 'อัตโนมัติ') + ')', 'ok');
+      reloadJob();
+    }).catch(handleAuthError);
+  }
+
+  function uploadFinal(fileList) {
+    if (!fileList || fileList.length === 0) return;
+    var cfg = App.getCfg();
+    var maxBytes = cfg.settings.maxFileMB * 1024 * 1024;
+    var queue = [];
+    for (var i = 0; i < fileList.length; i++) {
+      if (fileList[i].size > maxBytes) {
+        App.toast('ไฟล์ "' + fileList[i].name + '" เกิน ' + cfg.settings.maxFileMB + ' MB', 'err');
+        continue;
+      }
+      queue.push(fileList[i]);
+    }
+    if (queue.length === 0) return;
+
+    var jobId = currentJob.request.jobId;
+    function step(index) {
+      if (index >= queue.length) {
+        App.loading(false);
+        App.toast('อัปโหลดไฟล์ส่งมอบเรียบร้อย', 'ok');
+        reloadJob();
+        return;
+      }
+      var file = queue[index];
+      App.loading(true, 'กำลังอัปโหลด ' + (index + 1) + '/' + queue.length + ' ...');
+      var reader = new FileReader();
+      reader.onload = function (e) {
+        var result = String(e.target.result);
+        var comma = result.indexOf(',');
+        App.api('apiAdminUploadFile', [token, jobId, {
+          fileName: file.name,
+          mimeType: file.type || 'application/octet-stream',
+          dataB64: comma >= 0 ? result.substring(comma + 1) : result
+        }, 'final']).then(function () {
+          step(index + 1);
+        }).catch(function (err) {
+          App.toast('อัปโหลด "' + file.name + '" ไม่สำเร็จ: ' + err.message, 'err');
+          step(index + 1);
+        });
+      };
+      reader.onerror = function () {
+        App.toast('อ่านไฟล์ "' + file.name + '" ไม่สำเร็จ', 'err');
+        step(index + 1);
+      };
+      reader.readAsDataURL(file);
+    }
+    step(0);
+  }
+
+  function deleteFile(attachmentId) {
+    App.prompt({
+      title: 'ยืนยันการลบไฟล์',
+      html: '<p style="font-size:.9rem">ไฟล์จะถูกย้ายไปถังขยะของ Google Drive</p>',
+      okLabel: 'ลบไฟล์'
+    }).then(function (ok) {
+      if (!ok) return;
+      return App.api('apiAdminDeleteFile', [token, attachmentId]).then(function () {
+        App.toast('ลบไฟล์เรียบร้อย', 'ok');
+        reloadJob();
+      });
+    }).catch(handleAuthError);
+  }
+
+  /* ------------------------------------------------------------ แดชบอร์ด */
+
+  function loadDashboard() {
+    App.loading(true, 'กำลังคำนวณสถิติ...');
+    App.api('apiAdminStats', [token, {}]).then(function (s) {
+      App.loading(false);
+      renderDashboard(s);
+    }).catch(handleAuthError);
+  }
+
+  function tile(n, label, icon, color, bg) {
+    return '<div class="col-6 col-lg-3"><div class="stat-tile">' +
+      '<div class="d-flex justify-content-between align-items-start mb-2">' +
+      '<div class="ico" style="background:' + bg + ';color:' + color + '"><i class="bi ' + icon + '"></i></div>' +
+      '</div><div class="n" style="color:' + color + '">' + n + '</div>' +
+      '<div class="l">' + App.esc(label) + '</div></div></div>';
+  }
+
+  function barChart(title, items, icon) {
+    if (!items || items.length === 0) {
+      return '<div class="card-soft p-3 p-md-4 h-100"><div class="fw-semibold mb-3">' +
+        '<i class="bi ' + icon + ' me-2" style="color:var(--primary)"></i>' + App.esc(title) + '</div>' +
+        '<div class="empty-state py-4"><i class="bi bi-bar-chart"></i>' +
+        '<p class="mt-2 mb-0" style="font-size:.85rem">ยังไม่มีข้อมูล</p></div></div>';
+    }
+    var max = items.reduce(function (m, i) { return Math.max(m, i.count); }, 0) || 1;
+    return '<div class="card-soft p-3 p-md-4 h-100">' +
+      '<div class="fw-semibold mb-3"><i class="bi ' + icon + ' me-2" style="color:var(--primary)"></i>' +
+      App.esc(title) + '</div>' +
+      items.slice(0, 8).map(function (i) {
+        return '<div class="bar-row"><div class="name" title="' + App.esc(i.label) + '">' +
+          App.esc(i.label) + '</div><div class="track"><div class="fill" style="width:' +
+          ((i.count / max) * 100) + '%"></div></div><div class="val">' + i.count + '</div></div>';
+      }).join('') + '</div>';
+  }
+
+  function renderDashboard(s) {
+    var t = s.totals;
+    var monthMax = s.byMonth.reduce(function (m, x) { return Math.max(m, x.received); }, 0) || 1;
+    var monthChart = s.byMonth.length === 0
+      ? '<div class="empty-state py-4"><i class="bi bi-calendar3"></i>' +
+        '<p class="mt-2 mb-0" style="font-size:.85rem">ยังไม่มีข้อมูล</p></div>'
+      : '<div class="d-flex align-items-end gap-2" style="height:170px">' +
+        s.byMonth.map(function (m) {
+          var h = Math.max(4, (m.received / monthMax) * 130);
+          var hd = m.received > 0 ? Math.max(2, (m.delivered / monthMax) * 130) : 0;
+          return '<div class="flex-fill text-center" title="' + App.esc(m.label) + ': รับ ' +
+            m.received + ' งาน ส่งมอบ ' + m.delivered + ' งาน">' +
+            '<div style="position:relative;height:135px;display:flex;align-items:flex-end;justify-content:center">' +
+              '<div style="width:60%;height:' + h + 'px;background:#fed7aa;border-radius:6px 6px 0 0"></div>' +
+              '<div style="width:60%;height:' + hd + 'px;background:var(--primary);border-radius:6px 6px 0 0;' +
+                'position:absolute;bottom:0"></div>' +
+            '</div>' +
+            '<div style="font-size:.68rem;color:var(--text-light);margin-top:.3rem">' +
+              App.esc(m.label) + '</div></div>';
+        }).join('') + '</div>' +
+        '<div class="d-flex gap-3 justify-content-center mt-2" style="font-size:.75rem;color:var(--text-light)">' +
+        '<span><span style="display:inline-block;width:10px;height:10px;background:#fed7aa;' +
+        'border-radius:3px"></span> รับคำขอ</span>' +
+        '<span><span style="display:inline-block;width:10px;height:10px;background:var(--primary);' +
+        'border-radius:3px"></span> ส่งมอบแล้ว</span></div>';
+
+    document.getElementById('admin-dashboard').innerHTML =
+      '<div class="row g-3 mb-3">' +
+        tile(t.all, 'คำขอทั้งหมด', 'bi-inbox-fill', 'var(--primary)', '#fff7ed') +
+        tile(t.active, 'อยู่ระหว่างดำเนินการ', 'bi-hourglass-split', 'var(--warning)', '#fffbeb') +
+        tile(t.delivered, 'ส่งมอบแล้ว', 'bi-check-circle-fill', 'var(--success)', '#ecfdf5') +
+        tile(t.overdue, 'เกินกำหนดส่ง', 'bi-exclamation-triangle-fill', 'var(--danger)', '#fef2f2') +
+      '</div>' +
+      '<div class="row g-3 mb-3">' +
+        tile(s.avgLeadTimeDays === null ? '-' : s.avgLeadTimeDays + ' วัน',
+          'ระยะเวลาเฉลี่ยรับคำขอถึงส่งมอบ', 'bi-speedometer2', 'var(--info)', '#f0fdfa') +
+        tile(s.avgFirstDraftDays === null ? '-' : s.avgFirstDraftDays + ' วัน',
+          'เฉลี่ยจนได้ร่างแรก', 'bi-pencil-square', 'var(--purple)', '#f5f3ff') +
+        tile(s.avgRevisions === null ? '-' : s.avgRevisions + ' รอบ',
+          'รอบแก้ไขเฉลี่ยต่อชิ้นงาน', 'bi-arrow-repeat', 'var(--warning)', '#fffbeb') +
+        tile(s.completeOnFirstSubmit === null ? '-' : s.completeOnFirstSubmit + '%',
+          'คำขอที่ข้อมูลครบตั้งแต่ครั้งแรก', 'bi-clipboard-check', 'var(--success)', '#ecfdf5') +
+      '</div>' +
+      '<div class="row g-3 mb-3">' +
+        '<div class="col-lg-8"><div class="card-soft p-3 p-md-4">' +
+          '<div class="fw-semibold mb-3"><i class="bi bi-bar-chart-line me-2" ' +
+          'style="color:var(--primary)"></i>ปริมาณงานรายเดือน</div>' + monthChart + '</div></div>' +
+        '<div class="col-lg-4">' + barChart('สัดส่วนตามสถานะ',
+          s.byStatus.filter(function (x) { return x.count > 0; }), 'bi-pie-chart') + '</div>' +
+      '</div>' +
+      '<div class="row g-3">' +
+        '<div class="col-lg-6">' + barChart('ประเภทสื่อที่ขอมากที่สุด', s.byMedia, 'bi-images') + '</div>' +
+        '<div class="col-lg-6">' + barChart('หน่วยงานที่ใช้บริการมากที่สุด', s.byDepartment, 'bi-building') +
+        '</div>' +
+      '</div>' +
+      '<div class="text-center mt-3" style="font-size:.76rem;color:var(--text-light)">' +
+        'คำนวณเมื่อ ' + App.thaiDate(s.generatedAt, true) + '</div>';
+  }
+
+  /* ---------------------------------------------------------- คลังผลงาน */
+
+  function loadAssets() {
+    App.loading(true, 'กำลังโหลดคลังผลงาน...');
+    App.api('apiAdminAssets', [token, {}]).then(function (rows) {
+      App.loading(false);
+      var html = rows.length === 0
+        ? '<div class="card-soft empty-state"><i class="bi bi-collection"></i>' +
+          '<p class="mt-3 mb-0">ยังไม่มีผลงานที่ส่งมอบแล้ว</p></div>'
+        : '<div class="row g-3">' + rows.map(function (a) {
+            return '<div class="col-md-6 col-lg-4"><div class="card-soft p-3 h-100">' +
+              '<div class="d-flex justify-content-between align-items-start mb-2">' +
+                '<span class="badge-soft">' + App.esc(a.jobId) + '</span>' +
+                '<span style="font-size:.72rem;color:var(--text-light)">' +
+                  App.shortDate(a.deliveredAt) + '</span></div>' +
+              '<div style="font-weight:500;font-size:.92rem;margin-bottom:.2rem">' +
+                App.esc(a.projectName) + '</div>' +
+              '<div style="font-size:.78rem;color:var(--text-light);margin-bottom:.6rem">' +
+                App.esc(a.department) + '</div>' +
+              '<div style="font-size:.78rem;color:var(--text-light);margin-bottom:.6rem">' +
+                '<i class="bi bi-images me-1"></i>' + App.esc(a.media) + '</div>' +
+              a.files.map(function (f) {
+                return '<a href="' + App.esc(f.fileUrl) + '" target="_blank" ' +
+                  'class="d-block text-truncate" style="font-size:.8rem">' +
+                  '<i class="bi bi-file-earmark me-1"></i>' + App.esc(f.fileName) + '</a>';
+              }).join('') +
+              '<a href="' + App.esc(a.folderUrl) + '" target="_blank" ' +
+                'class="btn btn-sm btn-ghost w-100 mt-2 py-1">เปิดโฟลเดอร์</a>' +
+              '</div></div>';
+          }).join('') + '</div>';
+      document.getElementById('admin-assets').innerHTML = html;
+    }).catch(handleAuthError);
+  }
+
+  /* -------------------------------------------------------------- ตั้งค่า */
+
+  var SETTING_LABELS = {
+    revisionLimit: ['จำนวนรอบแก้ไขสูงสุด', 'จำนวนรอบที่ผู้ขอรับบริการแจ้งแก้ไขได้ต่อหนึ่งคำขอ'],
+    minLeadDays: ['ระยะเวลายื่นล่วงหน้าขั้นต่ำ (วัน)', 'หากน้อยกว่านี้ ผู้ขอต้องระบุเหตุผลความเร่งด่วน'],
+    slaFirstDraftDays: ['ระยะเวลาส่งร่างแรก (วัน)', 'ใช้แสดงในเงื่อนไขการให้บริการ'],
+    notifyEmails: ['อีเมลเจ้าหน้าที่ที่รับแจ้งเตือน', 'คั่นหลายอีเมลด้วยเครื่องหมายจุลภาค'],
+    fromName: ['ชื่อผู้ส่งอีเมล', ''],
+    replyTo: ['อีเมลสำหรับตอบกลับ', ''],
+    maxFileMB: ['ขนาดไฟล์สูงสุดต่อไฟล์ (MB)', ''],
+    maxFiles: ['จำนวนไฟล์แนบสูงสุด', ''],
+    allowedFileTypes: ['นามสกุลไฟล์ที่อนุญาต', 'คั่นด้วยจุลภาค'],
+    aiEnabled: ['เปิดใช้ AI สรุป Design Brief', 'true หรือ false'],
+    aiModel: ['โมเดล AI ที่ใช้', ''],
+    publicFormOpen: ['เปิดรับคำขอ', 'true หรือ false'],
+    closedMessage: ['ข้อความเมื่อปิดรับคำขอ', '']
+  };
+
+  function loadSettings() {
+    App.loading(true, 'กำลังโหลดการตั้งค่า...');
+    Promise.all([
+      App.api('apiAdminSettings', [token]),
+      App.api('apiAdminUsers', [token])
+    ]).then(function (results) {
+      App.loading(false);
+      renderSettings(results[0], results[1]);
+    }).catch(function (err) {
+      App.loading(false);
+      if (/ผู้ดูแลระบบ/.test(err.message)) {
+        document.getElementById('admin-settings').innerHTML =
+          '<div class="card-soft empty-state"><i class="bi bi-shield-lock"></i>' +
+          '<p class="mt-3 mb-0">เฉพาะผู้ดูแลระบบเท่านั้นที่เข้าถึงหน้าตั้งค่าได้</p></div>';
+        return;
+      }
+      handleAuthError(err);
+    });
+  }
+
+  function renderSettings(data, users) {
+    var fields = data.settings.map(function (s) {
+      var meta = SETTING_LABELS[s.key] || [s.key, ''];
+      var isBool = s.value === 'true' || s.value === 'false';
+      var input = isBool
+        ? '<select class="form-select form-select-sm" data-key="' + s.key + '">' +
+          '<option value="true"' + (s.value === 'true' ? ' selected' : '') + '>เปิด</option>' +
+          '<option value="false"' + (s.value === 'false' ? ' selected' : '') + '>ปิด</option></select>'
+        : '<input type="text" class="form-control form-control-sm" data-key="' + s.key +
+          '" value="' + App.esc(s.value) + '">';
+      return '<div class="col-md-6"><label class="form-label">' + App.esc(meta[0]) + '</label>' +
+        input + (meta[1] ? '<div class="form-text">' + App.esc(meta[1]) + '</div>' : '') + '</div>';
+    }).join('');
+
+    var userRows = users.map(function (u) {
+      return '<tr><td>' + App.esc(u.name) + '</td><td>' + App.esc(u.email) + '</td>' +
+        '<td><span class="badge-soft">' + (u.role === 'admin' ? 'ผู้ดูแลระบบ' : 'เจ้าหน้าที่') + '</span></td>' +
+        '<td>' + (u.active ? '<span style="color:var(--success)">ใช้งาน</span>' :
+          '<span style="color:var(--text-light)">ปิดใช้งาน</span>') + '</td>' +
+        '<td style="font-size:.78rem;color:var(--text-light)">' +
+          (u.lastLoginAt ? App.thaiDate(u.lastLoginAt, true) : '-') + '</td>' +
+        '<td class="text-end"><button class="btn btn-sm btn-link p-0" ' +
+          'onclick="Admin.editUser(\'' + App.esc(u.email) + '\')">แก้ไข</button></td></tr>';
+    }).join('');
+
+    document.getElementById('admin-settings').innerHTML =
+      '<div class="card-soft p-3 p-md-4 mb-3">' +
+        '<div class="fw-semibold mb-3"><i class="bi bi-sliders me-2" style="color:var(--primary)"></i>' +
+          'ค่าตั้งค่าระบบ</div>' +
+        '<div class="row g-3" id="settings-fields">' + fields + '</div>' +
+        '<div class="mt-3 pt-3" style="border-top:1px solid var(--border)">' +
+          '<button class="btn btn-brand btn-sm" onclick="Admin.saveSettings()">' +
+            '<i class="bi bi-save"></i>บันทึกการตั้งค่า</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="card-soft p-3 p-md-4 mb-3">' +
+        '<div class="fw-semibold mb-2"><i class="bi bi-cpu me-2" style="color:var(--primary)"></i>' +
+          'การเชื่อมต่อ AI สรุป Design Brief</div>' +
+        '<div style="font-size:.87rem;color:var(--text-light)" class="mb-3">' +
+          (data.hasApiKey
+            ? '<i class="bi bi-check-circle-fill me-1" style="color:var(--success)"></i>' +
+              'ตั้งค่า API key ของ Claude แล้ว ระบบใช้ AI สรุป Design Brief ให้อัตโนมัติ'
+            : '<i class="bi bi-exclamation-circle me-1" style="color:var(--warning)"></i>' +
+              'ยังไม่ได้ตั้งค่า API key ระบบจะสรุป Design Brief ด้วยสูตรสำเร็จแทน') +
+        '</div>' +
+        '<div class="row g-2 align-items-end">' +
+          '<div class="col-md-8">' +
+            '<label class="form-label">Claude API key</label>' +
+            '<input type="password" class="form-control form-control-sm" id="ai-key" ' +
+              'autocomplete="off" placeholder="' +
+              (data.hasApiKey ? 'บันทึกไว้แล้ว (พิมพ์เพื่อเปลี่ยนเป็นคีย์ใหม่)' : 'sk-ant-...') + '">' +
+          '</div>' +
+          '<div class="col-md-4 d-flex gap-2">' +
+            '<button class="btn btn-sm btn-brand flex-fill justify-content-center" ' +
+              'onclick="Admin.saveApiKey()"><i class="bi bi-save"></i>บันทึก</button>' +
+            (data.hasApiKey ? '<button class="btn btn-sm btn-ghost" onclick="Admin.clearApiKey()">ลบ</button>' : '') +
+          '</div>' +
+        '</div>' +
+        '<div class="form-text mt-2">สร้างคีย์ได้ที่ console.anthropic.com ' +
+          'ระบบเก็บคีย์ไว้ใน Script Properties และไม่เคยส่งกลับมาแสดงบนหน้าเว็บอีก</div>' +
+      '</div>' +
+      '<div class="card-soft p-3 p-md-4">' +
+        '<div class="d-flex justify-content-between align-items-center mb-3">' +
+          '<div class="fw-semibold"><i class="bi bi-people me-2" style="color:var(--primary)"></i>' +
+            'บัญชีเจ้าหน้าที่</div>' +
+          '<button class="btn btn-sm btn-ghost" onclick="Admin.editUser(\'\')">' +
+            '<i class="bi bi-person-plus me-1"></i>เพิ่มบัญชี</button>' +
+        '</div>' +
+        '<div class="table-responsive"><table class="table table-clean mb-0">' +
+          '<thead><tr><th>ชื่อ</th><th>อีเมล</th><th>สิทธิ์</th><th>สถานะ</th>' +
+          '<th>เข้าใช้ล่าสุด</th><th></th></tr></thead><tbody>' + userRows + '</tbody></table></div>' +
+      '</div>';
+  }
+
+  function saveSettings() {
+    var inputs = document.querySelectorAll('#settings-fields [data-key]');
+    var patch = {};
+    for (var i = 0; i < inputs.length; i++) {
+      patch[inputs[i].getAttribute('data-key')] = inputs[i].value;
+    }
+    App.loading(true, 'กำลังบันทึก...');
+    App.api('apiAdminSaveSettings', [token, patch]).then(function () {
+      App.loading(false);
+      App.toast('บันทึกการตั้งค่าเรียบร้อย (รีเฟรชหน้าเพื่อให้มีผลกับแบบฟอร์ม)', 'ok');
+    }).catch(handleAuthError);
+  }
+
+  function saveApiKey() {
+    var key = document.getElementById('ai-key').value.trim();
+    if (!key) { App.toast('กรุณากรอก API key', 'err'); return; }
+    App.loading(true, 'กำลังบันทึก API key...');
+    App.api('apiAdminSetApiKey', [token, key]).then(function () {
+      App.loading(false);
+      App.toast('บันทึก API key เรียบร้อย ระบบจะใช้ AI สรุป Design Brief ตั้งแต่คำขอถัดไป', 'ok');
+      loadSettings();
+    }).catch(handleAuthError);
+  }
+
+  function clearApiKey() {
+    App.prompt({
+      title: 'ลบ API key',
+      html: '<p style="font-size:.9rem">หลังลบแล้ว ระบบจะสรุป Design Brief ด้วยสูตรสำเร็จแทน AI</p>',
+      okLabel: 'ลบ API key'
+    }).then(function (ok) {
+      if (!ok) return;
+      return App.api('apiAdminSetApiKey', [token, '']).then(function () {
+        App.toast('ลบ API key เรียบร้อย', 'ok');
+        loadSettings();
+      });
+    }).catch(handleAuthError);
+  }
+
+  function editUser(email) {
+    var isNew = !email;
+    App.prompt({
+      title: isNew ? 'เพิ่มบัญชีเจ้าหน้าที่' : 'แก้ไขบัญชี ' + email,
+      html:
+        '<div class="mb-2"><label class="form-label">อีเมล<span class="req">*</span></label>' +
+        '<input type="email" class="form-control" id="u-email" value="' + App.esc(email) + '"' +
+        (isNew ? '' : ' readonly') + '></div>' +
+        '<div class="mb-2"><label class="form-label">ชื่อ-นามสกุล<span class="req">*</span></label>' +
+        '<input type="text" class="form-control" id="u-name"></div>' +
+        '<div class="mb-2"><label class="form-label">สิทธิ์</label>' +
+        '<select class="form-select" id="u-role"><option value="staff">เจ้าหน้าที่</option>' +
+        '<option value="admin">ผู้ดูแลระบบ</option></select></div>' +
+        '<div class="mb-2"><label class="form-label">รหัสผ่าน' +
+        (isNew ? '<span class="req">*</span>' : ' (เว้นว่างหากไม่เปลี่ยน)') + '</label>' +
+        '<input type="password" class="form-control" id="u-password" autocomplete="new-password"></div>' +
+        '<div class="form-check"><input class="form-check-input" type="checkbox" id="u-active" checked>' +
+        '<label class="form-check-label" for="u-active">เปิดใช้งานบัญชีนี้</label></div>',
+      okLabel: 'บันทึก'
+    }).then(function (ok) {
+      if (!ok) return;
+      var payload = {
+        email: document.getElementById('u-email') ? document.getElementById('u-email').value.trim() : email,
+        name: document.getElementById('u-name') ? document.getElementById('u-name').value.trim() : '',
+        role: document.getElementById('u-role') ? document.getElementById('u-role').value : 'staff',
+        password: document.getElementById('u-password') ? document.getElementById('u-password').value : '',
+        active: document.getElementById('u-active') ? document.getElementById('u-active').checked : true
+      };
+      App.loading(true, 'กำลังบันทึก...');
+      return App.api('apiAdminSaveUser', [token, payload]).then(function () {
+        App.loading(false);
+        App.toast('บันทึกบัญชีเรียบร้อย', 'ok');
+        loadSettings();
+      });
+    }).catch(handleAuthError);
+  }
+
+  function openChangePassword() {
+    App.prompt({
+      title: 'เปลี่ยนรหัสผ่าน',
+      html:
+        '<div class="mb-2"><label class="form-label">รหัสผ่านปัจจุบัน</label>' +
+        '<input type="password" class="form-control" id="p-old" autocomplete="current-password"></div>' +
+        '<div><label class="form-label">รหัสผ่านใหม่ (อย่างน้อย 8 ตัวอักษร)</label>' +
+        '<input type="password" class="form-control" id="p-new" autocomplete="new-password"></div>',
+      okLabel: 'เปลี่ยนรหัสผ่าน'
+    }).then(function (ok) {
+      if (!ok) return;
+      var oldPw = document.getElementById('p-old').value;
+      var newPw = document.getElementById('p-new').value;
+      App.loading(true, 'กำลังเปลี่ยนรหัสผ่าน...');
+      return App.api('apiChangePassword', [token, oldPw, newPw]).then(function () {
+        App.loading(false);
+        App.toast('เปลี่ยนรหัสผ่านเรียบร้อย', 'ok');
+      });
+    }).catch(handleAuthError);
+  }
+
+  /* -------------------------------------------------------------- ส่งออก */
+
+  function exportCsv() {
+    var filter = {
+      q: document.getElementById('q-search').value.trim(),
+      status: document.getElementById('q-status').value,
+      priority: document.getElementById('q-priority').value
+    };
+    App.loading(true, 'กำลังเตรียมข้อมูล...');
+    App.api('apiAdminExport', [token, filter]).then(function (data) {
+      App.loading(false);
+      var lines = [data.header].concat(data.rows).map(function (row) {
+        return row.map(function (cell) {
+          var v = String(cell === null || cell === undefined ? '' : cell);
+          return '"' + v.replace(/"/g, '""') + '"';
+        }).join(',');
+      });
+      var csv = lines.join('\n');
+      App.prompt({
+        title: 'ส่งออกข้อมูล (' + data.rows.length + ' รายการ)',
+        html: '<div class="form-text mb-2">คัดลอกข้อความด้านล่างไปวางในโปรแกรม Excel หรือ Google Sheets ' +
+          'โดยเลือก Paste special แล้วแยกด้วยเครื่องหมายจุลภาค</div>' +
+          '<textarea class="form-control" rows="10" id="csv-out" style="font-size:.75rem;' +
+          'font-family:monospace">' + App.esc(csv) + '</textarea>',
+        okLabel: 'คัดลอกทั้งหมด'
+      }).then(function (ok) {
+        if (!ok) return;
+        var box = document.getElementById('csv-out');
+        if (box) { box.select(); document.execCommand('copy'); }
+        App.toast('คัดลอกข้อมูลแล้ว', 'ok');
+      });
+    }).catch(handleAuthError);
+  }
+
+  return {
+    init: init, isLoggedIn: isLoggedIn, login: login, logout: logout, onEnter: onEnter,
+    loadQueue: loadQueue, debouncedLoadQueue: debouncedLoadQueue, openJob: openJob,
+    changeStatus: changeStatus, setDraftUrl: setDraftUrl, assign: assign, addNote: addNote,
+    setRevisionLimit: setRevisionLimit, regenerateBrief: regenerateBrief,
+    uploadFinal: uploadFinal, deleteFile: deleteFile, saveSettings: saveSettings,
+    saveApiKey: saveApiKey, clearApiKey: clearApiKey,
+    editUser: editUser, openChangePassword: openChangePassword, exportCsv: exportCsv
+  };
+})();
+</script>
