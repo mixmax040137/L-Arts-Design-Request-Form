@@ -1,0 +1,274 @@
+<script>
+/* =========================================================================
+   ui_Script_Track — หน้าติดตามสถานะสำหรับผู้ขอรับบริการ
+   ========================================================================= */
+var Track = (function () {
+  var current = null;   // ข้อมูลงานที่กำลังแสดง
+  var auth = { jobId: '', email: '', token: '' };
+
+  function search() {
+    var jobId = document.getElementById('t-job').value.trim().toUpperCase();
+    var email = document.getElementById('t-email').value.trim();
+    if (!jobId) { App.toast('กรุณากรอกเลขที่คำขอ', 'err'); return; }
+    if (!email) { App.toast('กรุณากรอกอีเมลที่ใช้ยื่นคำขอ', 'err'); return; }
+    load(jobId, email, '');
+  }
+
+  function openFromLink(jobId, token) {
+    document.getElementById('t-job').value = jobId;
+    load(jobId, '', token);
+  }
+
+  function load(jobId, email, token) {
+    App.loading(true, 'กำลังค้นหาคำขอ...');
+    App.api('apiTrack', [jobId, email, token]).then(function (data) {
+      App.loading(false);
+      auth = { jobId: jobId, email: email, token: token };
+      current = data;
+      render(data);
+    }).catch(function (err) {
+      App.loading(false);
+      current = null;
+      document.getElementById('track-result').innerHTML =
+        '<div class="card-soft empty-state">' +
+        '<i class="bi bi-search"></i>' +
+        '<p class="mt-3 mb-0">' + App.esc(err.message) + '</p></div>';
+    });
+  }
+
+  function refresh() {
+    if (!auth.jobId) return;
+    load(auth.jobId, auth.email, auth.token);
+  }
+
+  function stepperHtml(view) {
+    var flow = App.getCfg().statusFlow;
+    var isException = view.statusStep === 0;
+    if (isException) {
+      var color = view.status === 'CANCELLED' ? 'var(--text-light)' : 'var(--danger)';
+      var icon = view.status === 'CANCELLED' ? 'bi-x-circle-fill' : 'bi-exclamation-triangle-fill';
+      var note = view.status === 'CANCELLED'
+        ? (view.cancelReason ? 'เหตุผล: ' + view.cancelReason : '')
+        : 'เจ้าหน้าที่ขอข้อมูลเพิ่มเติม กรุณาตรวจสอบอีเมลของท่านและตอบกลับ';
+      return '<div class="p-3 p-md-4 mb-3" style="background:#fff5f5;border:1px solid #fecaca;border-radius:16px">' +
+        '<div class="d-flex gap-3 align-items-start">' +
+        '<i class="bi ' + icon + '" style="font-size:1.6rem;color:' + color + '"></i>' +
+        '<div><div style="font-weight:600">' + App.esc(view.statusLabel) + '</div>' +
+        '<div style="font-size:.87rem;color:var(--text-light)">' + App.esc(note) + '</div></div></div></div>';
+    }
+
+    var total = flow.length;
+    var progress = total > 1 ? ((view.statusStep - 1) / (total - 1)) * 80 : 0;
+    var steps = flow.map(function (s) {
+      var cls = s.step < view.statusStep ? 'done' : (s.step === view.statusStep ? 'now' : '');
+      var inner = s.step < view.statusStep ? '<i class="bi bi-check-lg"></i>' : s.step;
+      return '<div class="tstep ' + cls + '">' +
+        '<div class="circle">' + inner + '</div>' +
+        '<div><div class="label">' + App.esc(s.label) + '</div>' +
+        '<div class="en">' + App.esc(s.en) + '</div></div></div>';
+    }).join('');
+
+    return '<div class="track-stepper">' +
+      '<div class="bar" style="width:' + progress + '%"></div>' + steps + '</div>';
+  }
+
+  function render(view) {
+    var cfg = App.getCfg();
+    var daysLeft = App.daysUntil(view.dueDate);
+    var dueClass = daysLeft === null ? '' :
+      (daysLeft < 0 ? 'color:var(--danger)' : (daysLeft <= 3 ? 'color:var(--warning)' : ''));
+
+    var deliverables = view.deliverables.map(function (d) {
+      return '<li>' + App.esc(d.mediaLabel) + ' &middot; ขนาด ' + App.esc(d.size) +
+        (d.quantity > 1 ? ' &middot; จำนวน ' + d.quantity + ' ชิ้น' : '') +
+        (d.note ? '<div style="font-size:.8rem;color:var(--text-light)">' + App.esc(d.note) + '</div>' : '') +
+        '</li>';
+    }).join('');
+
+    var actionBox = '';
+    if (view.canApprove || view.canRequestRevision) {
+      actionBox =
+        '<div class="card-soft p-3 p-md-4 mb-3" style="border-color:#fed7aa;background:#fffaf5">' +
+          '<div class="fw-semibold mb-2"><i class="bi bi-eye me-2" style="color:var(--primary)"></i>' +
+          'ร่างชิ้นงานพร้อมให้ตรวจแล้ว</div>' +
+          (view.draftUrl ?
+            '<a href="' + App.esc(view.draftUrl) + '" target="_blank" class="btn btn-ghost btn-sm mb-3">' +
+            '<i class="bi bi-box-arrow-up-right me-1"></i>เปิดดูร่างชิ้นงาน</a>' : '') +
+          '<div style="font-size:.85rem;color:var(--text-light)" class="mb-3">' +
+            'ใช้สิทธิ์แก้ไขไปแล้ว ' + view.revisionCount + ' จาก ' + view.revisionLimit + ' รอบ ' +
+            'กรุณารวบรวมจุดที่ต้องการแก้ไขให้ครบในคราวเดียว' +
+          '</div>' +
+          '<div class="d-flex gap-2 flex-wrap">' +
+            (view.canApprove ?
+              '<button class="btn btn-brand btn-sm" onclick="Track.approve()">' +
+              '<i class="bi bi-check-circle"></i>อนุมัติร่างชิ้นงาน</button>' : '') +
+            (view.canRequestRevision ?
+              '<button class="btn btn-ghost btn-sm" onclick="Track.requestRevision()">' +
+              '<i class="bi bi-pencil-square me-1"></i>แจ้งจุดที่ต้องแก้ไข</button>' :
+              '<span class="badge-soft">ใช้สิทธิ์แก้ไขครบแล้ว กรุณาติดต่อเจ้าหน้าที่โดยตรง</span>') +
+          '</div>' +
+        '</div>';
+    }
+
+    var filesBox = '';
+    if (view.finalFiles && view.finalFiles.length > 0) {
+      filesBox =
+        '<div class="card-soft p-3 p-md-4 mb-3" style="border-color:#a7f3d0;background:#f0fdf4">' +
+          '<div class="fw-semibold mb-3"><i class="bi bi-folder-check me-2" style="color:var(--success)"></i>' +
+          'ไฟล์ฉบับสมบูรณ์</div>' +
+          view.finalFiles.map(function (f) {
+            return '<div class="file-row">' +
+              '<i class="bi bi-file-earmark-arrow-down" style="color:var(--success)"></i>' +
+              '<div class="flex-grow-1 text-truncate">' + App.esc(f.fileName) + '</div>' +
+              '<a href="' + App.esc(f.fileUrl) + '" target="_blank" class="btn btn-sm btn-ghost py-1">' +
+              'เปิดไฟล์</a></div>';
+          }).join('') +
+        '</div>';
+    }
+
+    var revisionsBox = '';
+    if (view.revisions.length > 0) {
+      revisionsBox =
+        '<div class="card-soft p-3 p-md-4 mb-3">' +
+          '<div class="fw-semibold mb-3"><i class="bi bi-arrow-repeat me-2" style="color:var(--purple)"></i>' +
+          'ประวัติการขอแก้ไข</div>' +
+          view.revisions.map(function (r) {
+            return '<div class="mb-3 pb-3" style="border-bottom:1px dashed var(--border)">' +
+              '<div class="d-flex justify-content-between align-items-center mb-1">' +
+              '<span class="badge-soft">รอบที่ ' + r.round + '</span>' +
+              '<span style="font-size:.76rem;color:var(--text-light)">' +
+              App.thaiDate(r.createdAt, true) + '</span></div>' +
+              '<div style="font-size:.87rem">' + App.nl2br(r.comment) + '</div></div>';
+          }).join('') +
+        '</div>';
+    }
+
+    var timelineBox =
+      '<div class="card-soft p-3 p-md-4">' +
+        '<div class="fw-semibold mb-3"><i class="bi bi-clock-history me-2" style="color:var(--primary)"></i>' +
+        'ประวัติการดำเนินงาน</div>' +
+        view.timeline.slice().reverse().map(function (t) {
+          return '<div class="timeline-item">' +
+            '<div class="tl-dot"><i class="bi ' + timelineIcon(t.action) + '"></i></div>' +
+            '<div class="tl-body"><div>' + App.esc(t.detail || actionLabel(t.action)) + '</div>' +
+            '<div class="tl-time">' + App.thaiDate(t.at, true) + '</div></div></div>';
+        }).join('') +
+      '</div>';
+
+    document.getElementById('track-result').innerHTML =
+      '<div class="card-soft p-3 p-md-4 mb-3">' +
+        '<div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-1">' +
+          '<div>' +
+            '<div style="font-size:.78rem;color:var(--text-light)">เลขที่คำขอ</div>' +
+            '<div style="font-size:1.35rem;font-weight:700;color:var(--primary);letter-spacing:.5px">' +
+              App.esc(view.jobId) + '</div>' +
+          '</div>' +
+          '<div class="text-end">' +
+            '<span class="badge-status" style="background:' + view.statusColor + '">' +
+              App.esc(view.statusLabel) + '</span>' +
+            '<div style="font-size:.76rem;color:var(--text-light);margin-top:.3rem">' +
+              'อัปเดตล่าสุด ' + App.thaiDate(view.timeline.length ?
+                view.timeline[view.timeline.length - 1].at : view.createdAt, true) + '</div>' +
+          '</div>' +
+        '</div>' +
+        '<div style="font-size:1.02rem;font-weight:500;margin-bottom:.2rem">' +
+          App.esc(view.projectName) + '</div>' +
+        '<div style="font-size:.85rem;color:var(--text-light)">' +
+          App.esc(view.requesterName) + ' &middot; ' + App.esc(view.department) + '</div>' +
+        stepperHtml(view) +
+        '<div class="row g-3 mt-1 pt-3" style="border-top:1px solid var(--border)">' +
+          '<div class="col-6 col-md-3"><div class="detail-label">วันที่ยื่นคำขอ</div>' +
+            '<div style="font-size:.88rem">' + App.thaiDate(view.createdAt) + '</div></div>' +
+          '<div class="col-6 col-md-3"><div class="detail-label">กำหนดใช้งาน</div>' +
+            '<div style="font-size:.88rem;' + dueClass + '">' + App.thaiDate(view.dueDate) +
+            (daysLeft !== null && view.statusStep < 5 && view.statusStep > 0 ?
+              '<br><span style="font-size:.76rem">' +
+              (daysLeft < 0 ? 'เกินกำหนด ' + Math.abs(daysLeft) + ' วัน' : 'เหลืออีก ' + daysLeft + ' วัน') +
+              '</span>' : '') + '</div></div>' +
+          '<div class="col-6 col-md-3"><div class="detail-label">ความเร่งด่วน</div>' +
+            '<div style="font-size:.88rem">' + App.esc(view.priority) + '</div></div>' +
+          '<div class="col-6 col-md-3"><div class="detail-label">รอบการแก้ไข</div>' +
+            '<div style="font-size:.88rem">' + view.revisionCount + ' / ' + view.revisionLimit + ' รอบ</div></div>' +
+        '</div>' +
+        '<div class="mt-3 pt-3" style="border-top:1px solid var(--border)">' +
+          '<div class="detail-label mb-1">รายการชิ้นงานที่ขอ</div>' +
+          '<ul style="font-size:.88rem;padding-left:1.1rem;margin-bottom:0;line-height:1.9">' +
+            deliverables + '</ul>' +
+        '</div>' +
+      '</div>' +
+      actionBox + filesBox + revisionsBox + timelineBox;
+  }
+
+  function actionLabel(action) {
+    var map = {
+      CREATE: 'ยื่นคำขอเข้าสู่ระบบ', SUBMIT: 'ยืนยันการยื่นคำขอ', STATUS: 'เปลี่ยนสถานะงาน',
+      REVISION: 'ขอแก้ไขร่างชิ้นงาน', APPROVE: 'อนุมัติร่างชิ้นงาน', BRIEF: 'สรุปโจทย์งานออกแบบ',
+      UPLOAD: 'อัปโหลดไฟล์', ASSIGN: 'มอบหมายผู้รับผิดชอบ'
+    };
+    return map[action] || action;
+  }
+
+  function timelineIcon(action) {
+    var map = {
+      CREATE: 'bi-file-earmark-plus', SUBMIT: 'bi-send-check', STATUS: 'bi-arrow-right-circle',
+      REVISION: 'bi-pencil-square', APPROVE: 'bi-hand-thumbs-up', BRIEF: 'bi-cpu',
+      UPLOAD: 'bi-cloud-arrow-up', ASSIGN: 'bi-person-check', BRIEF_FALLBACK: 'bi-cpu'
+    };
+    return map[action] || 'bi-dot';
+  }
+
+  function requestRevision() {
+    App.prompt({
+      title: 'แจ้งจุดที่ต้องการแก้ไข',
+      html: '<div class="rules-box mb-3" style="font-size:.83rem">' +
+        'กรุณาระบุจุดที่ต้องการแก้ไขให้ครบถ้วนในคราวเดียว เช่น ข้อความที่ต้องแก้ ตำแหน่งภาพ สีที่ต้องการ ' +
+        'เพื่อให้การแก้ไขเสร็จภายในรอบเดียว</div>',
+      field: {
+        label: 'รายละเอียดจุดที่ต้องแก้ไข', type: 'textarea', rows: 6, required: true,
+        maxlength: 2000, placeholder: 'ตัวอย่าง\n1. แก้วันที่จาก 15 ต.ค. เป็น 18 ต.ค.\n2. เปลี่ยนภาพประกอบด้านบนเป็นภาพที่แนบใหม่'
+      },
+      okLabel: 'ส่งคำขอแก้ไข'
+    }).then(function (text) {
+      if (!text) return;
+      App.loading(true, 'กำลังส่งคำขอแก้ไข...');
+      return App.api('apiRequestRevision', [auth.jobId, auth.email, auth.token, text])
+        .then(function (res) {
+          App.loading(false);
+          App.toast('ส่งคำขอแก้ไขรอบที่ ' + res.round + ' เรียบร้อย เหลือสิทธิ์อีก ' +
+            res.remaining + ' รอบ', 'ok');
+          refresh();
+        });
+    }).catch(function (err) {
+      App.loading(false);
+      App.toast(err.message, 'err');
+    });
+  }
+
+  function approve() {
+    App.prompt({
+      title: 'อนุมัติร่างชิ้นงาน',
+      html: '<p style="font-size:.9rem">ยืนยันว่าร่างชิ้นงานถูกต้องครบถ้วนแล้ว ' +
+        'เจ้าหน้าที่จะจัดทำไฟล์ฉบับสมบูรณ์และส่งมอบให้ต่อไป</p>' +
+        '<div class="rules-box" style="font-size:.83rem">เมื่ออนุมัติแล้ว ' +
+        'การขอแก้ไขเพิ่มเติมจะต้องติดต่อฝ่ายสื่อสารองค์กรโดยตรง</div>',
+      okLabel: 'ยืนยันการอนุมัติ'
+    }).then(function (ok) {
+      if (!ok) return;
+      App.loading(true, 'กำลังบันทึกการอนุมัติ...');
+      return App.api('apiApproveDraft', [auth.jobId, auth.email, auth.token]).then(function () {
+        App.loading(false);
+        App.toast('บันทึกการอนุมัติเรียบร้อย ขอบคุณครับ', 'ok');
+        refresh();
+      });
+    }).catch(function (err) {
+      App.loading(false);
+      App.toast(err.message, 'err');
+    });
+  }
+
+  return {
+    search: search, openFromLink: openFromLink, refresh: refresh,
+    requestRevision: requestRevision, approve: approve
+  };
+})();
+</script>

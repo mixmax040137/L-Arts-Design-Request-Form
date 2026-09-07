@@ -1,0 +1,278 @@
+<script>
+/* =========================================================================
+   ui_Script_Core — สิ่งที่ทุกหน้าใช้ร่วมกัน: การเรียกเซิร์ฟเวอร์ การสลับหน้า
+   การแจ้งเตือน และตัวช่วยจัดรูปแบบข้อมูล
+   ========================================================================= */
+var App = (function () {
+  var cfg = null;
+  var currentView = 'home';
+
+  var THAI_MONTHS = ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
+    'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'];
+
+  /** เรียกฟังก์ชันฝั่งเซิร์ฟเวอร์ คืน Promise */
+  function api(fnName, args) {
+    return new Promise(function (resolve, reject) {
+      var runner = google.script.run
+        .withSuccessHandler(function (res) {
+          if (res && res.ok) resolve(res.data);
+          else reject(new Error((res && res.error) || 'เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ'));
+        })
+        .withFailureHandler(function (err) {
+          reject(new Error((err && err.message) ? err.message
+            : 'เชื่อมต่อเซิร์ฟเวอร์ไม่สำเร็จ กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่'));
+        });
+      runner[fnName].apply(runner, args || []);
+    });
+  }
+
+  function esc(v) {
+    if (v === null || v === undefined) return '';
+    return String(v)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function nl2br(v) { return esc(v).replace(/\n/g, '<br>'); }
+
+  function parseDate(v) {
+    if (!v) return null;
+    var m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/);
+    if (!m) return null;
+    return new Date(+m[1], +m[2] - 1, +m[3], +(m[4] || 0), +(m[5] || 0));
+  }
+
+  function thaiDate(v, withTime) {
+    var d = parseDate(v);
+    if (!d) return '-';
+    var out = d.getDate() + ' ' + THAI_MONTHS[d.getMonth()] + ' ' + (d.getFullYear() + 543);
+    if (withTime) {
+      out += ' ' + ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2) + ' น.';
+    }
+    return out;
+  }
+
+  function shortDate(v) {
+    var d = parseDate(v);
+    if (!d) return '-';
+    return ('0' + d.getDate()).slice(-2) + '/' + ('0' + (d.getMonth() + 1)).slice(-2) +
+      '/' + (d.getFullYear() + 543);
+  }
+
+  function todayStr(offsetDays) {
+    var d = new Date();
+    if (offsetDays) d.setDate(d.getDate() + offsetDays);
+    return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+  }
+
+  function daysUntil(v) {
+    var d = parseDate(v);
+    if (!d) return null;
+    var today = new Date();
+    today.setHours(0, 0, 0, 0);
+    d.setHours(0, 0, 0, 0);
+    return Math.round((d - today) / 86400000);
+  }
+
+  function bytes(n) {
+    n = +n || 0;
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+  }
+
+  function toast(message, type) {
+    var wrap = document.getElementById('toasts');
+    var el = document.createElement('div');
+    el.className = 'toast-msg ' + (type || '');
+    var icon = type === 'err' ? 'bi-exclamation-triangle-fill'
+      : (type === 'ok' ? 'bi-check-circle-fill' : 'bi-info-circle-fill');
+    var color = type === 'err' ? 'var(--danger)' : (type === 'ok' ? 'var(--success)' : 'var(--primary)');
+    el.innerHTML = '<div class="d-flex gap-2"><i class="bi ' + icon + '" style="color:' + color +
+      ';margin-top:2px"></i><div>' + nl2br(message) + '</div></div>';
+    wrap.appendChild(el);
+    setTimeout(function () {
+      el.style.transition = 'opacity .3s';
+      el.style.opacity = '0';
+      setTimeout(function () { if (el.parentNode) el.parentNode.removeChild(el); }, 320);
+    }, type === 'err' ? 7000 : 4000);
+  }
+
+  function loading(on, text) {
+    var el = document.getElementById('loading');
+    document.getElementById('loading-text').textContent = text || 'กำลังทำงาน...';
+    if (on) el.classList.add('on'); else el.classList.remove('on');
+  }
+
+  /** กล่องยืนยัน/กรอกข้อความแบบใช้ซ้ำ คืน Promise ของค่าที่กรอก */
+  function prompt(options) {
+    return new Promise(function (resolve) {
+      var o = options || {};
+      document.getElementById('gm-title').textContent = o.title || 'ยืนยัน';
+      var body = o.html || '';
+      if (o.field) {
+        body += '<label class="form-label">' + esc(o.field.label || '') +
+          (o.field.required ? '<span class="req">*</span>' : '') + '</label>';
+        if (o.field.type === 'textarea') {
+          body += '<textarea class="form-control" id="gm-input" rows="' + (o.field.rows || 3) +
+            '" maxlength="' + (o.field.maxlength || 2000) + '" placeholder="' +
+            esc(o.field.placeholder || '') + '"></textarea>';
+        } else {
+          body += '<input type="' + (o.field.type || 'text') + '" class="form-control" id="gm-input" ' +
+            'maxlength="' + (o.field.maxlength || 500) + '" value="' + esc(o.field.value || '') +
+            '" placeholder="' + esc(o.field.placeholder || '') + '">';
+        }
+        if (o.field.hint) body += '<div class="form-text">' + esc(o.field.hint) + '</div>';
+      }
+      document.getElementById('gm-body').innerHTML = body;
+
+      var okBtn = document.getElementById('gm-ok');
+      var fresh = okBtn.cloneNode(true);
+      fresh.textContent = o.okLabel || 'ยืนยัน';
+      okBtn.parentNode.replaceChild(fresh, okBtn);
+
+      var modalEl = document.getElementById('genericModal');
+      var modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+      var settled = false;
+
+      fresh.addEventListener('click', function () {
+        var value = true;
+        if (o.field) {
+          var input = document.getElementById('gm-input');
+          value = input ? input.value.trim() : '';
+          if (o.field.required && !value) {
+            input.classList.add('is-invalid');
+            return;
+          }
+        }
+        settled = true;
+        modal.hide();
+        resolve(value);
+      });
+
+      modalEl.addEventListener('hidden.bs.modal', function handler() {
+        modalEl.removeEventListener('hidden.bs.modal', handler);
+        if (!settled) resolve(null);
+      });
+
+      modal.show();
+      setTimeout(function () {
+        var input = document.getElementById('gm-input');
+        if (input) input.focus();
+      }, 320);
+    });
+  }
+
+  function go(view) {
+    if (view === 'admin' && !Admin.isLoggedIn()) view = 'login';
+    var sections = document.querySelectorAll('.view');
+    for (var i = 0; i < sections.length; i++) sections[i].classList.remove('active');
+    var target = document.getElementById('view-' + view);
+    if (!target) { target = document.getElementById('view-home'); view = 'home'; }
+    target.classList.add('active');
+    currentView = view;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    var actionBtn = document.getElementById('btn-topbar-action');
+    if (view === 'form') {
+      actionBtn.innerHTML = '<i class="bi bi-house me-1"></i>หน้าแรก';
+      actionBtn.onclick = function () { App.go('home'); };
+    } else {
+      actionBtn.innerHTML = '<i class="bi bi-plus-circle me-1"></i>ยื่นคำขอ';
+      actionBtn.onclick = function () { App.go('form'); };
+    }
+
+    if (view === 'admin') Admin.onEnter();
+  }
+
+  function showGuide() {
+    go('home');
+    setTimeout(function () {
+      var box = document.getElementById('guide-box');
+      if (box) box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 220);
+  }
+
+  function renderFlowSteps() {
+    var steps = [
+      { i: 'bi-file-earmark-text', t: 'ยื่นคำขอ', d: 'กรอกแบบฟอร์มเดียวให้ครบ พร้อมแนบไฟล์ประกอบ' },
+      { i: 'bi-envelope-check', t: 'ระบบตอบกลับอัตโนมัติ', d: 'ออกเลขที่งานและส่งอีเมลยืนยันทันที' },
+      { i: 'bi-cpu', t: 'สรุป Design Brief', d: 'AI สรุปโจทย์งานและระบุข้อมูลที่ยังขาด' },
+      { i: 'bi-list-check', t: 'เข้าคิวกลาง', d: 'จัดลำดับความสำคัญและกำหนดระยะเวลาที่ตรวจสอบได้' },
+      { i: 'bi-brush', t: 'ออกแบบร่าง', d: 'ดำเนินงานตาม Design Brief และอัตลักษณ์องค์กร' },
+      { i: 'bi-chat-square-text', t: 'ตรวจร่างออนไลน์', d: 'แจ้งจุดแก้ไขผ่านระบบ นับรอบแก้ไขอัตโนมัติ' },
+      { i: 'bi-folder-check', t: 'ส่งมอบไฟล์', d: 'ไฟล์ฉบับสมบูรณ์พร้อมชื่อไฟล์มาตรฐาน' },
+      { i: 'bi-bell', t: 'อัปเดตสถานะอัตโนมัติ', d: 'แจ้งเตือนทุกครั้งที่สถานะเปลี่ยน' },
+      { i: 'bi-graph-up', t: 'สรุปผลการให้บริการ', d: 'แดชบอร์ดสรุปจำนวนงานและระยะเวลาเฉลี่ย' }
+    ];
+    var html = steps.map(function (s, idx) {
+      return '<div class="col-6 col-md-4">' +
+        '<div class="d-flex gap-3 h-100 p-3" style="background:#fff;border:1px solid var(--border);border-radius:14px">' +
+          '<div style="width:38px;height:38px;flex:0 0 38px;border-radius:11px;background:var(--primary-soft);' +
+          'color:var(--primary);display:flex;align-items:center;justify-content:center">' +
+            '<i class="bi ' + s.i + '"></i></div>' +
+          '<div><div style="font-size:.72rem;color:var(--text-light)">ขั้นตอนที่ ' + (idx + 1) + '</div>' +
+          '<div style="font-weight:500;font-size:.9rem">' + esc(s.t) + '</div>' +
+          '<div style="font-size:.78rem;color:var(--text-light);line-height:1.55">' + esc(s.d) + '</div></div>' +
+        '</div></div>';
+    }).join('');
+    document.getElementById('flow-steps').innerHTML = html;
+  }
+
+  function renderTerms() {
+    var s = cfg.settings;
+    var html =
+      '<ol class="mb-0" style="padding-left:1.1rem">' +
+      '<li>ผู้มีสิทธิ์ขอรับบริการ ได้แก่ หน่วยงาน สาขาวิชา และโครงการภายในคณะศิลปศาสตร์ มหาวิทยาลัยธรรมศาสตร์</li>' +
+      '<li>กรุณายื่นคำขอล่วงหน้าอย่างน้อย <strong>' + s.minLeadDays + ' วันทำการ</strong> ' +
+      'ก่อนวันที่ต้องการใช้งาน หากเร่งด่วนกว่านั้นต้องระบุเหตุผลประกอบ</li>' +
+      '<li>ฝ่ายสื่อสารองค์กรจะส่งร่างชิ้นงานให้ตรวจภายใน <strong>' + s.slaFirstDraftDays +
+      ' วันทำการ</strong> นับจากวันที่ข้อมูลครบถ้วน</li>' +
+      '<li>สงวนสิทธิ์การแก้ไขชิ้นงานไม่เกิน <strong>' + s.revisionLimit + ' รอบ</strong> ต่อหนึ่งคำขอ ' +
+      'กรุณารวบรวมจุดแก้ไขให้ครบในคราวเดียว</li>' +
+      '<li>ชิ้นงานทั้งหมดออกแบบภายใต้อัตลักษณ์องค์กร (CI) ของคณะฯ และใช้เพื่อภารกิจของคณะฯ เท่านั้น</li>' +
+      '<li>ไฟล์ที่ส่งมอบเป็นไฟล์ดิจิทัล ผู้ขอรับบริการเป็นผู้ดำเนินการผลิตหรือเผยแพร่ต่อเอง</li>' +
+      '</ol>';
+    ['terms-box', 'terms-box-2'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.innerHTML = html;
+    });
+  }
+
+  function init() {
+    loading(true, 'กำลังโหลดระบบ...');
+    api('apiBootstrap').then(function (data) {
+      cfg = data;
+      renderFlowSteps();
+      renderTerms();
+      Form.init(cfg);
+      Admin.init();
+      loading(false);
+
+      var startPage = (BOOT && BOOT.page) ? BOOT.page : 'home';
+      if (startPage === 'track' && BOOT.jobId) {
+        go('track');
+        Track.openFromLink(BOOT.jobId, BOOT.trackToken);
+      } else {
+        go(startPage);
+      }
+    }).catch(function (err) {
+      loading(false);
+      document.body.insertAdjacentHTML('afterbegin',
+        '<div class="alert alert-danger m-4" style="border-radius:14px">' +
+        '<strong>ไม่สามารถเริ่มระบบได้</strong><br>' + esc(err.message) +
+        '<br><small>หากเพิ่งติดตั้งระบบ กรุณาตรวจสอบว่าได้เรียกใช้ฟังก์ชัน setupSystem() ใน Apps Script แล้ว</small></div>');
+    });
+  }
+
+  return {
+    init: init, api: api, go: go, toast: toast, loading: loading, prompt: prompt,
+    esc: esc, nl2br: nl2br, thaiDate: thaiDate, shortDate: shortDate, todayStr: todayStr,
+    daysUntil: daysUntil, bytes: bytes, showGuide: showGuide,
+    getCfg: function () { return cfg; },
+    getView: function () { return currentView; }
+  };
+})();
+
+document.addEventListener('DOMContentLoaded', App.init);
+</script>

@@ -1,0 +1,530 @@
+<script>
+/* =========================================================================
+   ui_Script_Form — แบบฟอร์มขอรับบริการออกแบบ 3 ขั้นตอน
+   ========================================================================= */
+var Form = (function () {
+  var cfg = null;
+  var step = 1;
+  var itemSeq = 0;
+  var items = [];        // [{id, mediaType, size, sizeOther, mediaOther, quantity, note}]
+  var files = [];        // [{name, size, type, dataB64}]
+  var channels = [];
+  var created = null;    // {jobId, trackToken}
+  var submitting = false;
+
+  function init(config) {
+    cfg = config;
+    var deptSelect = document.getElementById('f-dept');
+    deptSelect.innerHTML = '<option value="">-- เลือกหน่วยงาน --</option>' +
+      cfg.departments.map(function (d) {
+        return '<option value="' + App.esc(d) + '">' + App.esc(d) + '</option>';
+      }).join('');
+
+    document.getElementById('f-channels').innerHTML = cfg.channels.map(function (c, i) {
+      return '<div class="chip" data-ch="' + App.esc(c) + '" onclick="Form.toggleChannel(this)">' +
+        App.esc(c) + '</div>';
+    }).join('');
+
+    document.getElementById('file-hint').textContent =
+      'รองรับ ' + cfg.settings.allowedFileTypes.split(',').join(', ') +
+      ' ขนาดไม่เกิน ' + cfg.settings.maxFileMB + ' MB ต่อไฟล์ สูงสุด ' + cfg.settings.maxFiles + ' ไฟล์';
+
+    document.getElementById('f-due-date').min = App.todayStr(0);
+    document.getElementById('f-event-date').min = App.todayStr(0);
+
+    if (!cfg.settings.formOpen) {
+      document.getElementById('form-closed').classList.remove('d-none');
+      document.getElementById('form-closed').innerHTML =
+        '<i class="bi bi-exclamation-triangle-fill me-2"></i>' + App.esc(cfg.settings.closedMessage);
+      document.getElementById('form-body').classList.add('d-none');
+    }
+
+    if (items.length === 0) addItem();
+    setupDropzone();
+  }
+
+  function setupDropzone() {
+    var dz = document.getElementById('dropzone');
+    ['dragenter', 'dragover'].forEach(function (ev) {
+      dz.addEventListener(ev, function (e) { e.preventDefault(); dz.classList.add('drag'); });
+    });
+    ['dragleave', 'drop'].forEach(function (ev) {
+      dz.addEventListener(ev, function (e) { e.preventDefault(); dz.classList.remove('drag'); });
+    });
+    dz.addEventListener('drop', function (e) {
+      if (e.dataTransfer && e.dataTransfer.files) pickFiles(e.dataTransfer.files);
+    });
+  }
+
+  function toggleChannel(el) {
+    var name = el.getAttribute('data-ch');
+    var idx = channels.indexOf(name);
+    if (idx >= 0) { channels.splice(idx, 1); el.classList.remove('on'); }
+    else { channels.push(name); el.classList.add('on'); }
+  }
+
+  function onDeptChange() {
+    var isOther = document.getElementById('f-dept').value === 'อื่น ๆ';
+    document.getElementById('f-dept-other-wrap').style.display = isOther ? '' : 'none';
+  }
+
+  function onDueChange() {
+    var value = document.getElementById('f-due-date').value;
+    var hint = document.getElementById('f-due-hint');
+    var rushWrap = document.getElementById('f-rush-wrap');
+    if (!value) { hint.textContent = ''; rushWrap.classList.add('d-none'); return; }
+    var left = App.daysUntil(value);
+    var minLead = cfg.settings.minLeadDays;
+    if (left < 0) {
+      hint.innerHTML = '<span style="color:var(--danger)">วันที่ผ่านมาแล้ว กรุณาเลือกวันที่ในอนาคต</span>';
+      rushWrap.classList.add('d-none');
+    } else if (left < minLead) {
+      hint.innerHTML = '<span style="color:var(--warning)">เหลืออีก ' + left + ' วัน ' +
+        'ซึ่งน้อยกว่าระยะเวลามาตรฐาน ' + minLead + ' วัน กรุณาระบุเหตุผลความเร่งด่วน</span>';
+      rushWrap.classList.remove('d-none');
+    } else {
+      hint.innerHTML = '<span style="color:var(--success)">เหลืออีก ' + left + ' วัน อยู่ในระยะเวลามาตรฐาน</span>';
+      rushWrap.classList.add('d-none');
+    }
+  }
+
+  /* ------------------------------------------------------ รายการชิ้นงาน */
+
+  function addItem() {
+    if (items.length >= 10) { App.toast('เพิ่มชิ้นงานได้สูงสุด 10 รายการต่อหนึ่งคำขอ', 'err'); return; }
+    itemSeq++;
+    items.push({ id: itemSeq, mediaType: '', size: '', sizeOther: '', mediaOther: '', quantity: 1, note: '' });
+    renderItems();
+  }
+
+  function removeItem(id) {
+    if (items.length <= 1) { App.toast('ต้องมีชิ้นงานอย่างน้อย 1 รายการ', 'err'); return; }
+    items = items.filter(function (it) { return it.id !== id; });
+    renderItems();
+  }
+
+  function getItem(id) {
+    for (var i = 0; i < items.length; i++) if (items[i].id === id) return items[i];
+    return null;
+  }
+
+  function updateItem(id, field, value) {
+    var it = getItem(id);
+    if (!it) return;
+    it[field] = value;
+    if (field === 'mediaType') { it.size = ''; it.sizeOther = ''; renderItems(); }
+    if (field === 'size') renderItems();
+  }
+
+  function renderItems() {
+    var html = items.map(function (it, idx) {
+      var media = null;
+      for (var i = 0; i < cfg.mediaTypes.length; i++) {
+        if (cfg.mediaTypes[i].key === it.mediaType) media = cfg.mediaTypes[i];
+      }
+      var sizes = media ? media.sizes : [];
+      var needCustomSize = it.size === '__other__' || (media && sizes.length === 0);
+
+      return '' +
+      '<div class="card-soft p-3 mb-2" style="box-shadow:none">' +
+        '<div class="d-flex justify-content-between align-items-center mb-2">' +
+          '<span class="badge-soft">ชิ้นงานที่ ' + (idx + 1) + '</span>' +
+          (items.length > 1 ? '<button type="button" class="btn btn-sm btn-link text-danger p-0" ' +
+            'onclick="Form.removeItem(' + it.id + ')"><i class="bi bi-trash"></i></button>' : '') +
+        '</div>' +
+        '<div class="row g-2">' +
+          '<div class="col-md-5">' +
+            '<select class="form-select form-select-sm" onchange="Form.updateItem(' + it.id + ',\'mediaType\',this.value)">' +
+              '<option value="">-- เลือกประเภทสื่อ --</option>' +
+              cfg.mediaTypes.map(function (m) {
+                return '<option value="' + App.esc(m.key) + '"' +
+                  (m.key === it.mediaType ? ' selected' : '') + '>' + App.esc(m.label) + '</option>';
+              }).join('') +
+            '</select>' +
+            (it.mediaType === 'other' ?
+              '<input type="text" class="form-control form-control-sm mt-2" placeholder="ระบุประเภทสื่อ" ' +
+              'value="' + App.esc(it.mediaOther) + '" ' +
+              'oninput="Form.updateItemQuiet(' + it.id + ',\'mediaOther\',this.value)">' : '') +
+          '</div>' +
+          '<div class="col-md-4">' +
+            (sizes.length > 0 ?
+              '<select class="form-select form-select-sm" onchange="Form.updateItem(' + it.id + ',\'size\',this.value)">' +
+                '<option value="">-- เลือกขนาด --</option>' +
+                sizes.map(function (s) {
+                  return '<option value="' + App.esc(s) + '"' + (s === it.size ? ' selected' : '') + '>' +
+                    App.esc(s) + '</option>';
+                }).join('') +
+                '<option value="__other__"' + (it.size === '__other__' ? ' selected' : '') + '>ระบุขนาดเอง</option>' +
+              '</select>' : '') +
+            (needCustomSize ?
+              '<input type="text" class="form-control form-control-sm' + (sizes.length > 0 ? ' mt-2' : '') +
+              '" placeholder="ระบุขนาด เช่น 100 x 200 ซม." value="' + App.esc(it.sizeOther) + '" ' +
+              'oninput="Form.updateItemQuiet(' + it.id + ',\'sizeOther\',this.value)">' : '') +
+          '</div>' +
+          '<div class="col-md-3">' +
+            '<input type="number" class="form-control form-control-sm" min="1" max="1000" ' +
+            'value="' + (+it.quantity || 1) + '" placeholder="จำนวน" ' +
+            'oninput="Form.updateItemQuiet(' + it.id + ',\'quantity\',this.value)">' +
+          '</div>' +
+          '<div class="col-12">' +
+            '<input type="text" class="form-control form-control-sm" maxlength="500" ' +
+            'placeholder="หมายเหตุเฉพาะชิ้นงานนี้ (ถ้ามี)" value="' + App.esc(it.note) + '" ' +
+            'oninput="Form.updateItemQuiet(' + it.id + ',\'note\',this.value)">' +
+          '</div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+    document.getElementById('f-items').innerHTML = html;
+  }
+
+  /** อัปเดตค่าโดยไม่ render ใหม่ เพื่อไม่ให้เคอร์เซอร์กระโดด */
+  function updateItemQuiet(id, field, value) {
+    var it = getItem(id);
+    if (it) it[field] = value;
+  }
+
+  /* -------------------------------------------------------------- ไฟล์ */
+
+  function pickFiles(fileList) {
+    var maxBytes = cfg.settings.maxFileMB * 1024 * 1024;
+    var allowed = cfg.settings.allowedFileTypes.toLowerCase().split(',').map(function (x) { return x.trim(); });
+
+    for (var i = 0; i < fileList.length; i++) {
+      (function (file) {
+        if (files.length >= cfg.settings.maxFiles) {
+          App.toast('แนบไฟล์ได้สูงสุด ' + cfg.settings.maxFiles + ' ไฟล์', 'err');
+          return;
+        }
+        var dot = file.name.lastIndexOf('.');
+        var ext = dot >= 0 ? file.name.substring(dot + 1).toLowerCase() : '';
+        if (allowed.indexOf(ext) < 0) {
+          App.toast('ไฟล์ "' + file.name + '" เป็นชนิดที่ไม่รองรับ', 'err');
+          return;
+        }
+        if (file.size > maxBytes) {
+          App.toast('ไฟล์ "' + file.name + '" มีขนาด ' + App.bytes(file.size) +
+            ' เกิน ' + cfg.settings.maxFileMB + ' MB', 'err');
+          return;
+        }
+        for (var k = 0; k < files.length; k++) {
+          if (files[k].name === file.name && files[k].size === file.size) {
+            App.toast('ไฟล์ "' + file.name + '" ถูกเลือกไว้แล้ว', 'err');
+            return;
+          }
+        }
+        var reader = new FileReader();
+        reader.onload = function (e) {
+          var result = String(e.target.result);
+          var comma = result.indexOf(',');
+          files.push({
+            name: file.name,
+            size: file.size,
+            type: file.type || 'application/octet-stream',
+            dataB64: comma >= 0 ? result.substring(comma + 1) : result
+          });
+          renderFiles();
+        };
+        reader.onerror = function () { App.toast('อ่านไฟล์ "' + file.name + '" ไม่สำเร็จ', 'err'); };
+        reader.readAsDataURL(file);
+      })(fileList[i]);
+    }
+    document.getElementById('f-files').value = '';
+  }
+
+  function removeFile(index) {
+    files.splice(index, 1);
+    renderFiles();
+  }
+
+  function renderFiles() {
+    var el = document.getElementById('file-list');
+    if (files.length === 0) { el.innerHTML = ''; return; }
+    el.innerHTML = files.map(function (f, i) {
+      return '<div class="file-row">' +
+        '<i class="bi bi-file-earmark" style="color:var(--primary);font-size:1.1rem"></i>' +
+        '<div class="flex-grow-1 text-truncate">' + App.esc(f.name) + '</div>' +
+        '<span class="text-secondary" style="font-size:.78rem">' + App.bytes(f.size) + '</span>' +
+        '<button type="button" class="btn btn-sm btn-link text-danger p-0 ms-1" ' +
+        'onclick="Form.removeFile(' + i + ')"><i class="bi bi-x-lg"></i></button>' +
+        '</div>';
+    }).join('');
+  }
+
+  /* --------------------------------------------------- การเดินขั้นตอน */
+
+  function showStep(n) {
+    step = n;
+    var panels = document.querySelectorAll('#form-body .fstep');
+    for (var i = 0; i < panels.length; i++) {
+      panels[i].classList.toggle('d-none', +panels[i].getAttribute('data-step') !== n);
+    }
+    var dots = document.querySelectorAll('.wizard-steps .wstep');
+    for (var j = 0; j < dots.length; j++) {
+      var sn = +dots[j].getAttribute('data-step');
+      dots[j].classList.toggle('active', sn === n);
+      dots[j].classList.toggle('done', sn < n);
+      dots[j].querySelector('.dot').innerHTML = sn < n ? '<i class="bi bi-check-lg"></i>' : sn;
+    }
+    document.getElementById('f-back').style.visibility = n === 1 ? 'hidden' : 'visible';
+    var nextBtn = document.getElementById('f-next');
+    nextBtn.innerHTML = n === 3
+      ? '<i class="bi bi-send"></i>ส่งคำขอ'
+      : 'ถัดไป<i class="bi bi-arrow-right"></i>';
+    if (n === 3) buildSummary();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function mark(id, bad) {
+    var el = document.getElementById(id);
+    if (el) el.classList.toggle('is-invalid', !!bad);
+    return !bad;
+  }
+
+  function validateStep(n) {
+    var errors = [];
+    if (n === 1) {
+      var name = document.getElementById('f-name').value.trim();
+      mark('f-name', name.length < 2);
+      if (name.length < 2) errors.push('กรุณากรอกชื่อ-นามสกุลผู้ประสานงาน');
+
+      var email = document.getElementById('f-email').value.trim();
+      var emailOk = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(email);
+      mark('f-email', !emailOk);
+      if (!emailOk) errors.push('รูปแบบอีเมลไม่ถูกต้อง');
+
+      var phone = document.getElementById('f-phone').value.replace(/[^0-9]/g, '');
+      var phoneOk = phone.length >= 9 && phone.length <= 10;
+      mark('f-phone', !phoneOk);
+      if (!phoneOk) errors.push('กรุณากรอกเบอร์โทรศัพท์ 9-10 หลัก');
+
+      var dept = document.getElementById('f-dept').value;
+      mark('f-dept', !dept);
+      if (!dept) errors.push('กรุณาเลือกหน่วยงาน / สาขาวิชา');
+      if (dept === 'อื่น ๆ') {
+        var other = document.getElementById('f-dept-other').value.trim();
+        mark('f-dept-other', !other);
+        if (!other) errors.push('กรุณาระบุชื่อหน่วยงาน');
+      }
+    }
+
+    if (n === 2) {
+      var project = document.getElementById('f-project').value.trim();
+      mark('f-project', project.length < 3);
+      if (project.length < 3) errors.push('กรุณากรอกชื่อโครงการหรือกิจกรรม');
+
+      var due = document.getElementById('f-due-date').value;
+      var dueOk = !!due && App.daysUntil(due) >= 0;
+      mark('f-due-date', !dueOk);
+      if (!dueOk) errors.push('กรุณาเลือกวันที่ต้องการใช้งานเป็นวันที่ในอนาคต');
+
+      if (due && App.daysUntil(due) >= 0 && App.daysUntil(due) < cfg.settings.minLeadDays) {
+        var rush = document.getElementById('f-rush').value.trim();
+        mark('f-rush', !rush);
+        if (!rush) errors.push('กำหนดส่งน้อยกว่า ' + cfg.settings.minLeadDays +
+          ' วัน กรุณาระบุเหตุผลความจำเป็นเร่งด่วน');
+      }
+
+      var objective = document.getElementById('f-objective').value.trim();
+      mark('f-objective', objective.length < 10);
+      if (objective.length < 10) errors.push('กรุณาระบุวัตถุประสงค์อย่างน้อย 10 ตัวอักษร');
+
+      var audience = document.getElementById('f-audience').value.trim();
+      mark('f-audience', audience.length < 2);
+      if (audience.length < 2) errors.push('กรุณาระบุกลุ่มเป้าหมาย');
+
+      var keymsg = document.getElementById('f-keymsg').value.trim();
+      mark('f-keymsg', keymsg.length < 5);
+      if (keymsg.length < 5) errors.push('กรุณาระบุข้อความหลักที่ต้องการสื่อ');
+
+      if (channels.length === 0) errors.push('กรุณาเลือกช่องทางเผยแพร่อย่างน้อย 1 ช่องทาง');
+
+      var ref = document.getElementById('f-ref').value.trim();
+      if (ref && !/^https?:\/\//i.test(ref)) {
+        mark('f-ref', true);
+        errors.push('ลิงก์ตัวอย่างอ้างอิงต้องขึ้นต้นด้วย http:// หรือ https://');
+      } else { mark('f-ref', false); }
+
+      var itemErrors = 0;
+      for (var i = 0; i < items.length; i++) {
+        var it = items[i];
+        if (!it.mediaType) { itemErrors++; continue; }
+        if (it.mediaType === 'other' && !String(it.mediaOther).trim()) itemErrors++;
+        var size = it.size === '__other__' || !it.size ? String(it.sizeOther).trim() : it.size;
+        if (!size) itemErrors++;
+      }
+      if (itemErrors > 0) errors.push('กรุณาเลือกประเภทสื่อและระบุขนาดให้ครบทุกรายการชิ้นงาน');
+    }
+
+    if (n === 3) {
+      if (!document.getElementById('f-accept').checked) {
+        errors.push('กรุณายอมรับเงื่อนไขการให้บริการก่อนส่งคำขอ');
+      }
+    }
+
+    if (errors.length > 0) {
+      App.toast(errors.join('\n'), 'err');
+      return false;
+    }
+    return true;
+  }
+
+  function buildSummary() {
+    var dept = document.getElementById('f-dept').value === 'อื่น ๆ'
+      ? document.getElementById('f-dept-other').value.trim()
+      : document.getElementById('f-dept').value;
+    var rows = [
+      ['ผู้ประสานงาน', document.getElementById('f-name').value.trim() + ' (' + dept + ')'],
+      ['อีเมล / โทรศัพท์', document.getElementById('f-email').value.trim() + ' / ' +
+        document.getElementById('f-phone').value.trim()],
+      ['โครงการ', document.getElementById('f-project').value.trim()],
+      ['กำหนดใช้งาน', App.thaiDate(document.getElementById('f-due-date').value)],
+      ['ช่องทางเผยแพร่', channels.join(', ')],
+      ['ชิ้นงาน', items.map(function (it) {
+        var label = it.mediaType === 'other' ? it.mediaOther : (function () {
+          for (var i = 0; i < cfg.mediaTypes.length; i++) {
+            if (cfg.mediaTypes[i].key === it.mediaType) return cfg.mediaTypes[i].label;
+          }
+          return '';
+        })();
+        var size = (it.size === '__other__' || !it.size) ? it.sizeOther : it.size;
+        return label + ' (' + size + ') x ' + (+it.quantity || 1);
+      }).join('<br>')],
+      ['ไฟล์แนบ', files.length > 0 ? files.length + ' ไฟล์' : 'ไม่มีไฟล์แนบ']
+    ];
+    document.getElementById('f-summary').innerHTML = rows.map(function (r) {
+      return '<div class="row g-1"><div class="col-4 col-md-3 text-secondary">' + App.esc(r[0]) +
+        '</div><div class="col-8 col-md-9">' + (r[0] === 'ชิ้นงาน' ? r[1] : App.esc(r[1])) + '</div></div>';
+    }).join('');
+  }
+
+  function next() {
+    if (!validateStep(step)) return;
+    if (step < 3) { showStep(step + 1); return; }
+    submit();
+  }
+
+  function back() {
+    if (step > 1) showStep(step - 1);
+  }
+
+  function buildPayload() {
+    var dept = document.getElementById('f-dept').value;
+    return {
+      requesterName: document.getElementById('f-name').value.trim(),
+      requesterEmail: document.getElementById('f-email').value.trim(),
+      requesterPhone: document.getElementById('f-phone').value.trim(),
+      lineId: document.getElementById('f-line').value.trim(),
+      department: dept,
+      departmentOther: document.getElementById('f-dept-other').value.trim(),
+      projectName: document.getElementById('f-project').value.trim(),
+      eventDate: document.getElementById('f-event-date').value,
+      dueDate: document.getElementById('f-due-date').value,
+      rushReason: document.getElementById('f-rush').value.trim(),
+      objective: document.getElementById('f-objective').value.trim(),
+      targetAudience: document.getElementById('f-audience').value.trim(),
+      keyMessage: document.getElementById('f-keymsg').value.trim(),
+      mandatoryText: document.getElementById('f-mandatory').value.trim(),
+      referenceUrl: document.getElementById('f-ref').value.trim(),
+      notes: document.getElementById('f-notes').value.trim(),
+      channels: channels.slice(),
+      acceptTerms: document.getElementById('f-accept').checked,
+      deliverables: items.map(function (it) {
+        return {
+          mediaType: it.mediaType,
+          mediaOther: it.mediaOther,
+          size: it.size === '__other__' ? '' : it.size,
+          sizeOther: it.sizeOther,
+          quantity: +it.quantity || 1,
+          note: it.note
+        };
+      })
+    };
+  }
+
+  function submit() {
+    if (submitting) return;
+    submitting = true;
+    document.getElementById('f-next').disabled = true;
+    App.loading(true, 'กำลังส่งคำขอ...');
+
+    App.api('apiSubmitRequest', [buildPayload()]).then(function (res) {
+      created = res;
+      if (files.length === 0) return finalize();
+      return uploadSequentially(0).then(finalize);
+    }).then(function () {
+      App.loading(false);
+      submitting = false;
+      document.getElementById('f-next').disabled = false;
+      document.getElementById('form-body').classList.add('d-none');
+      document.getElementById('form-done').classList.remove('d-none');
+      document.getElementById('done-jobid').textContent = created.jobId;
+      App.toast('ยื่นคำขอเรียบร้อยแล้ว เลขที่ ' + created.jobId, 'ok');
+    }).catch(function (err) {
+      App.loading(false);
+      submitting = false;
+      document.getElementById('f-next').disabled = false;
+      App.toast(err.message, 'err');
+    });
+  }
+
+  function uploadSequentially(index) {
+    if (index >= files.length) return Promise.resolve();
+    var f = files[index];
+    App.loading(true, 'กำลังอัปโหลดไฟล์ ' + (index + 1) + ' จาก ' + files.length + '...');
+    return App.api('apiUploadFile', [created.jobId, created.trackToken, {
+      fileName: f.name, mimeType: f.type, dataB64: f.dataB64
+    }]).then(function () {
+      return uploadSequentially(index + 1);
+    }).catch(function (err) {
+      // ไฟล์เดียวล้มเหลวไม่ควรทำให้คำขอทั้งใบล้มเหลว
+      App.toast('อัปโหลดไฟล์ "' + f.name + '" ไม่สำเร็จ: ' + err.message, 'err');
+      return uploadSequentially(index + 1);
+    });
+  }
+
+  function finalize() {
+    App.loading(true, 'กำลังยืนยันคำขอและส่งอีเมล...');
+    return App.api('apiFinalizeRequest', [created.jobId, created.trackToken]);
+  }
+
+  function reset(goToForm) {
+    ['f-name', 'f-email', 'f-phone', 'f-line', 'f-dept-other', 'f-project', 'f-event-date',
+      'f-due-date', 'f-rush', 'f-objective', 'f-audience', 'f-keymsg', 'f-mandatory',
+      'f-ref', 'f-notes'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) { el.value = ''; el.classList.remove('is-invalid'); }
+      });
+    document.getElementById('f-dept').value = '';
+    document.getElementById('f-accept').checked = false;
+    document.getElementById('f-dept-other-wrap').style.display = 'none';
+    document.getElementById('f-rush-wrap').classList.add('d-none');
+    document.getElementById('f-due-hint').textContent = '';
+    channels = [];
+    var chips = document.querySelectorAll('#f-channels .chip');
+    for (var i = 0; i < chips.length; i++) chips[i].classList.remove('on');
+    items = [];
+    itemSeq = 0;
+    addItem();
+    files = [];
+    renderFiles();
+    created = null;
+    document.getElementById('form-done').classList.add('d-none');
+    document.getElementById('form-body').classList.remove('d-none');
+    showStep(1);
+    if (goToForm) App.go('form');
+  }
+
+  function goTrackResult() {
+    if (!created) return;
+    App.go('track');
+    Track.openFromLink(created.jobId, created.trackToken);
+  }
+
+  return {
+    init: init, next: next, back: back, addItem: addItem, removeItem: removeItem,
+    updateItem: updateItem, updateItemQuiet: updateItemQuiet, toggleChannel: toggleChannel,
+    onDeptChange: onDeptChange, onDueChange: onDueChange, pickFiles: pickFiles,
+    removeFile: removeFile, reset: reset, goTrackResult: goTrackResult
+  };
+})();
+</script>
