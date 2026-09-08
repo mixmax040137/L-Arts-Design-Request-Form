@@ -42,6 +42,8 @@ var Admin = (function () {
 
   function isLoggedIn() { return !!token && !!user; }
 
+  function isAdmin() { return isLoggedIn() && user.role === 'admin'; }
+
   function showUserMenu() {
     document.getElementById('user-menu').style.display = user ? '' : 'none';
     if (user) document.getElementById('user-name').textContent = user.name || user.email;
@@ -277,6 +279,9 @@ var Admin = (function () {
               '<i class="bi bi-sticky me-1"></i>บันทึกภายใน</button>' +
             '<button class="btn btn-sm btn-ghost" onclick="Admin.setRevisionLimit()">' +
               '<i class="bi bi-sliders me-1"></i>รอบแก้ไข</button>' +
+            (isAdmin() ? '<button class="btn btn-sm btn-ghost text-danger" ' +
+              'style="border-color:#fecaca" onclick="Admin.deleteRequest()">' +
+              '<i class="bi bi-trash me-1"></i>ลบคำขอถาวร</button>' : '') +
           '</div>' +
           '<div class="row g-2" style="font-size:.85rem">' +
             '<div class="col-6"><div class="detail-label">ผู้ประสานงาน</div>' +
@@ -850,7 +855,7 @@ var Admin = (function () {
         '<div class="form-text mt-2">สร้างคีย์ได้ที่ console.anthropic.com ' +
           'ระบบเก็บคีย์ไว้ใน Script Properties และไม่เคยส่งกลับมาแสดงบนหน้าเว็บอีก</div>' +
       '</div>' +
-      '<div class="card-soft p-3 p-md-4">' +
+      '<div class="card-soft p-3 p-md-4 mb-3">' +
         '<div class="d-flex justify-content-between align-items-center mb-3">' +
           '<div class="fw-semibold"><i class="bi bi-people me-2" style="color:var(--primary)"></i>' +
             'บัญชีเจ้าหน้าที่</div>' +
@@ -860,6 +865,17 @@ var Admin = (function () {
         '<div class="table-responsive"><table class="table table-clean mb-0">' +
           '<thead><tr><th>ชื่อ</th><th>อีเมล</th><th>สิทธิ์</th><th>สถานะ</th>' +
           '<th>เข้าใช้ล่าสุด</th><th></th></tr></thead><tbody>' + userRows + '</tbody></table></div>' +
+      '</div>' +
+      '<div class="card-soft p-3 p-md-4" style="border-color:#fecaca">' +
+        '<div class="fw-semibold mb-2" style="color:var(--danger)">' +
+          '<i class="bi bi-exclamation-octagon me-2"></i>โซนอันตราย</div>' +
+        '<div style="font-size:.87rem;color:var(--text-light)" class="mb-3">' +
+          'ล้างคำขอทั้งหมดและรีเซ็ตเลขที่คำขอกลับเป็น 0001 ' +
+          'ใช้เมื่อทดลองกรอกข้อมูลเสร็จแล้วและพร้อมเปิดใช้งานจริง ' +
+          'บัญชีเจ้าหน้าที่และค่าตั้งค่าจะไม่ถูกลบ</div>' +
+        '<button class="btn btn-sm btn-ghost text-danger" style="border-color:#fecaca" ' +
+          'onclick="Admin.resetData()">' +
+          '<i class="bi bi-trash3 me-1"></i>ล้างข้อมูลทดสอบทั้งหมด</button>' +
       '</div>';
   }
 
@@ -873,6 +889,68 @@ var Admin = (function () {
     App.api('apiAdminSaveSettings', [token, patch]).then(function () {
       App.loading(false);
       App.toast('บันทึกการตั้งค่าเรียบร้อย (รีเฟรชหน้าเพื่อให้มีผลกับแบบฟอร์ม)', 'ok');
+    }).catch(handleAuthError);
+  }
+
+  function deleteRequest() {
+    var r = currentJob.request;
+    App.prompt({
+      title: 'ลบคำขอถาวร',
+      html: '<div class="missing-box mb-3">' +
+        '<div class="fw-semibold mb-1" style="color:var(--danger)">' +
+        '<i class="bi bi-exclamation-triangle-fill me-1"></i>การลบนี้ย้อนกลับไม่ได้</div>' +
+        'ระบบจะลบคำขอ <strong>' + App.esc(r.jobId) + '</strong> ' +
+        'พร้อมรายการชิ้นงาน ไฟล์แนบ ประวัติการแก้ไข และไทม์ไลน์ทั้งหมด ' +
+        'และย้ายโฟลเดอร์งานใน Drive ลงถังขยะ (กู้คืนได้ภายใน 30 วัน)' +
+        '</div>' +
+        '<div class="form-text mb-2">หากต้องการเพียงยุติงาน ให้ใช้สถานะ ' +
+        '<em>ยกเลิกคำขอ</em> แทน เพราะยังเก็บประวัติไว้ตรวจสอบได้</div>',
+      field: {
+        label: 'พิมพ์เลขที่คำขอ ' + r.jobId + ' เพื่อยืนยัน',
+        required: true, placeholder: r.jobId
+      },
+      okLabel: 'ลบถาวร'
+    }).then(function (confirmText) {
+      if (!confirmText) return;
+      App.loading(true, 'กำลังลบคำขอ...');
+      return App.api('apiAdminDeleteRequest', [token, r.jobId, confirmText]).then(function (res) {
+        App.loading(false);
+        bootstrap.Modal.getOrCreateInstance(document.getElementById('jobModal')).hide();
+        currentJob = null;
+        App.toast('ลบคำขอ ' + res.jobId + ' เรียบร้อย ' +
+          '(ชิ้นงาน ' + res.deliverables + ' รายการ, ไฟล์ ' + res.attachments + ' ไฟล์)', 'ok');
+        loadQueue();
+      });
+    }).catch(handleAuthError);
+  }
+
+  function resetData() {
+    App.prompt({
+      title: 'ล้างข้อมูลทดสอบทั้งหมด',
+      html: '<div class="missing-box mb-3">' +
+        '<div class="fw-semibold mb-1" style="color:var(--danger)">' +
+        '<i class="bi bi-exclamation-triangle-fill me-1"></i>การลบนี้ย้อนกลับไม่ได้</div>' +
+        'จะลบ <strong>คำขอทั้งหมด</strong> พร้อมชิ้นงาน ไฟล์แนบ ประวัติการแก้ไข ไทม์ไลน์ ' +
+        'และย้ายโฟลเดอร์งานทุกโฟลเดอร์ลงถังขยะ จากนั้น<strong>รีเซ็ตเลขที่คำขอกลับเป็น 0001</strong>' +
+        '</div>' +
+        '<div class="rules-box mb-3" style="font-size:.83rem">' +
+        '<strong>สิ่งที่ไม่ถูกลบ</strong> บัญชีเจ้าหน้าที่ ค่าตั้งค่าระบบ และ API key ยังอยู่ครบ<br>' +
+        'เหมาะสำหรับใช้ครั้งเดียวหลังทดลองกรอกข้อมูลเสร็จ ก่อนเปิดใช้งานจริง</div>',
+      field: {
+        label: 'พิมพ์ข้อความ "ล้างข้อมูลทั้งหมด" เพื่อยืนยัน',
+        required: true, placeholder: 'ล้างข้อมูลทั้งหมด'
+      },
+      okLabel: 'ล้างข้อมูล'
+    }).then(function (confirmText) {
+      if (!confirmText) return;
+      App.loading(true, 'กำลังล้างข้อมูล...');
+      return App.api('apiAdminResetData', [token, confirmText]).then(function (res) {
+        App.loading(false);
+        App.toast('ล้างข้อมูลเรียบร้อย ลบคำขอ ' + res.requests + ' รายการ ' +
+          'และย้ายโฟลเดอร์ ' + res.foldersTrashed + ' โฟลเดอร์ลงถังขยะ ' +
+          'เลขที่คำขอถัดไปจะเริ่มที่ 0001', 'ok');
+        loadSettings();
+      });
     }).catch(handleAuthError);
   }
 
@@ -1022,6 +1100,7 @@ var Admin = (function () {
     setRevisionLimit: setRevisionLimit, regenerateBrief: regenerateBrief,
     uploadFinal: uploadFinal, deleteFile: deleteFile, saveSettings: saveSettings,
     saveApiKey: saveApiKey, clearApiKey: clearApiKey, testEmail: testEmail, copyText: copyText,
+    deleteRequest: deleteRequest, resetData: resetData,
     editUser: editUser, openChangePassword: openChangePassword, exportCsv: exportCsv
   };
 })();

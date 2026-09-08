@@ -8,6 +8,7 @@ var Form = (function () {
   var itemSeq = 0;
   var items = [];        // [{id, mediaType, size, sizeOther, mediaOther, quantity, note}]
   var files = [];        // [{name, size, type, dataB64}]
+  var pendingReads = 0;  // จำนวนไฟล์ที่เบราว์เซอร์ยังอ่านไม่เสร็จ
   var channels = [];
   var created = null;    // {jobId, trackToken}
   var submitting = false;
@@ -191,7 +192,7 @@ var Form = (function () {
 
     for (var i = 0; i < fileList.length; i++) {
       (function (file) {
-        if (files.length >= cfg.settings.maxFiles) {
+        if (files.length + pendingReads >= cfg.settings.maxFiles) {
           App.toast('แนบไฟล์ได้สูงสุด ' + cfg.settings.maxFiles + ' ไฟล์', 'err');
           return;
         }
@@ -213,7 +214,9 @@ var Form = (function () {
           }
         }
         var reader = new FileReader();
+        pendingReads++;
         reader.onload = function (e) {
+          pendingReads--;
           var result = String(e.target.result);
           var comma = result.indexOf(',');
           files.push({
@@ -224,7 +227,11 @@ var Form = (function () {
           });
           renderFiles();
         };
-        reader.onerror = function () { App.toast('อ่านไฟล์ "' + file.name + '" ไม่สำเร็จ', 'err'); };
+        reader.onerror = function () {
+          pendingReads--;
+          renderFiles();
+          App.toast('อ่านไฟล์ "' + file.name + '" ไม่สำเร็จ', 'err');
+        };
         reader.readAsDataURL(file);
       })(fileList[i]);
     }
@@ -238,8 +245,12 @@ var Form = (function () {
 
   function renderFiles() {
     var el = document.getElementById('file-list');
-    if (files.length === 0) { el.innerHTML = ''; return; }
-    el.innerHTML = files.map(function (f, i) {
+    var waiting = pendingReads > 0
+      ? '<div class="file-row text-secondary"><span class="spinner-border spinner-border-sm"></span>' +
+        '<div class="flex-grow-1">กำลังอ่านไฟล์อีก ' + pendingReads + ' ไฟล์...</div></div>'
+      : '';
+    if (files.length === 0) { el.innerHTML = waiting; return; }
+    el.innerHTML = waiting + files.map(function (f, i) {
       return '<div class="file-row">' +
         '<i class="bi bi-file-earmark" style="color:var(--primary);font-size:1.1rem"></i>' +
         '<div class="flex-grow-1 text-truncate">' + App.esc(f.name) + '</div>' +
@@ -399,6 +410,11 @@ var Form = (function () {
 
   function next() {
     if (!validateStep(step)) return;
+    if (pendingReads > 0) {
+      App.toast('ระบบกำลังอ่านไฟล์แนบอยู่ ' + pendingReads +
+        ' ไฟล์ กรุณารอสักครู่แล้วกดใหม่อีกครั้ง', 'err');
+      return;
+    }
     if (step < 3) { showStep(step + 1); return; }
     submit();
   }
@@ -443,6 +459,10 @@ var Form = (function () {
 
   function submit() {
     if (submitting) return;
+    if (pendingReads > 0) {
+      App.toast('ระบบกำลังอ่านไฟล์แนบอยู่ กรุณารอสักครู่แล้วกดส่งใหม่อีกครั้ง', 'err');
+      return;
+    }
     submitting = true;
     document.getElementById('f-next').disabled = true;
     App.loading(true, 'กำลังส่งคำขอ...');
@@ -506,6 +526,7 @@ var Form = (function () {
     itemSeq = 0;
     addItem();
     files = [];
+    pendingReads = 0;
     renderFiles();
     created = null;
     document.getElementById('form-done').classList.add('d-none');

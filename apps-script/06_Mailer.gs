@@ -2,13 +2,22 @@
  * 06_Mailer.gs — อีเมลแจ้งเตือนทุกชนิด
  */
 
+/**
+ * ทำความสะอาดหัวข้ออีเมล
+ * ตัดอักขระขึ้นบรรทัดใหม่ออก เพราะข้อมูลจากผู้ใช้ (เช่น ชื่อโครงการ) ถูกนำมาต่อในหัวข้อ
+ * หากมีการขึ้นบรรทัดใหม่ปนมา อาจถูกใช้แทรก header ของอีเมลได้
+ */
+function mailSubject_(subject) {
+  return truncate_(str_(subject).replace(/[\r\n\t]+/g, ' '), 200);
+}
+
 /** ส่งอีเมล (คืน true/false ไม่โยน error ออกไปนอกจากผู้เรียกต้องการ) */
 function sendMail_(to, subject, htmlBody) {
   var recipients = Array.isArray(to) ? to.join(',') : str_(to);
   if (!recipients) return false;
   MailApp.sendEmail({
     to: recipients,
-    subject: subject,
+    subject: mailSubject_(subject),
     htmlBody: htmlBody,
     name: getSetting_('fromName', DEFAULT_SETTINGS.fromName),
     replyTo: getSetting_('replyTo', DEFAULT_SETTINGS.replyTo)

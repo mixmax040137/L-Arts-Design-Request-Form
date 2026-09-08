@@ -149,6 +149,37 @@ function remove_(name, rowIndex) {
 }
 
 /**
+ * ลบทุกแถวที่คอลัมน์ key มีค่าตรงกับ value คืนจำนวนแถวที่ลบ
+ * ลบจากแถวล่างขึ้นบนเสมอ เพื่อไม่ให้เลขแถวที่เหลือเลื่อนระหว่างลบ
+ */
+function removeWhere_(name, key, value) {
+  var cols = COLUMNS[name];
+  var idx = cols.indexOf(key);
+  if (idx < 0) throw new Error('ไม่พบคอลัมน์ ' + key + ' ในชีต ' + name);
+  var sh = sheet_(name);
+  var lastRow = sh.getLastRow();
+  if (lastRow < 2) return 0;
+
+  var target = str_(value);
+  var values = sh.getRange(2, idx + 1, lastRow - 1, 1).getValues();
+  var rows = [];
+  for (var i = 0; i < values.length; i++) {
+    if (str_(values[i][0]) === target) rows.push(i + 2);
+  }
+  for (var r = rows.length - 1; r >= 0; r--) sh.deleteRow(rows[r]);
+  return rows.length;
+}
+
+/** ลบข้อมูลทุกแถวของชีต โดยคงหัวตารางไว้ คืนจำนวนแถวที่ลบ */
+function clearSheetRows_(name) {
+  var sh = sheet_(name);
+  var lastRow = sh.getLastRow();
+  if (lastRow < 2) return 0;
+  sh.deleteRows(2, lastRow - 1);
+  return lastRow - 1;
+}
+
+/**
  * รันงานภายใต้ lock ระดับสคริปต์ เพื่อกันการเขียนชนกัน
  * ใช้กับทุกงานที่ออกเลขที่หรือแก้ไขสถานะ
  */

@@ -122,6 +122,7 @@ class MockSheet {
     return this;
   }
   deleteRow(rowIndex) { this._data.splice(rowIndex - 1, 1); return this; }
+  deleteRows(rowIndex, howMany) { this._data.splice(rowIndex - 1, howMany); return this; }
   clear() { this._data = []; return this; }
   setFrozenRows() { return this; }
   setColumnWidth() { return this; }
@@ -184,6 +185,7 @@ class MockFolder {
   getName() { return this.name; }
   getUrl() { return 'https://drive.google.com/drive/folders/' + this.id; }
   isTrashed() { return this.trashed; }
+  setTrashed(v) { this.trashed = v; return this; }
   setDescription(d) { this.description = d; return this; }
   createFolder(name) {
     const f = new MockFolder(name, this, this.registry);

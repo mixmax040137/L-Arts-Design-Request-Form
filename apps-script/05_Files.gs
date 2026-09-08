@@ -80,7 +80,22 @@ function uploadAttachment_(jobId, payload, kind, uploader) {
   var finalSeq = existing.filter(function (f) { return str_(f.kind) === 'final'; }).length + 1;
   var storedName = standardFileName_(req, fileName, fileKind, finalSeq);
 
-  var folder = DriveApp.getFolderById(req.folderId);
+  // โฟลเดอร์อาจถูกลบหรือย้ายไปถังขยะ ให้สร้างใหม่แทนที่จะล้มเหลวทั้งคำขอ
+  var folder;
+  try {
+    folder = DriveApp.getFolderById(req.folderId);
+    if (folder.isTrashed()) throw new Error('โฟลเดอร์อยู่ในถังขยะ');
+  } catch (err) {
+    var rebuilt = createJobFolder_(req.jobId, req.projectName);
+    update_(SHEET.REQUESTS, req._row, {
+      folderId: rebuilt.id, folderUrl: rebuilt.url, updatedAt: nowIso_()
+    });
+    req.folderId = rebuilt.id;
+    req.folderUrl = rebuilt.url;
+    folder = DriveApp.getFolderById(rebuilt.id);
+    logTimeline_(req.jobId, 'system', 'NOTE', '', '',
+      'ไม่พบโฟลเดอร์เดิมของงาน ระบบจึงสร้างโฟลเดอร์ใหม่ให้อัตโนมัติ');
+  }
   var blob = Utilities.newBlob(bytes, mime, storedName);
   var file = folder.createFile(blob);
 

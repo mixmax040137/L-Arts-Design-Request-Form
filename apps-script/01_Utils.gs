@@ -250,3 +250,106 @@ function joinList_(arr) {
 function splitList_(v) {
   return str_(v).split(',').map(function (x) { return x.trim(); }).filter(function (x) { return !!x; });
 }
+
+/**
+ * ตรวจและปรับค่าตั้งค่าให้อยู่ในช่วงที่ระบบทำงานได้จริง
+ * ค่าที่พิมพ์ผิด เช่น maxFileMB = 999 หรือ 0 จะทำให้อัปโหลดไฟล์พังทั้งระบบ
+ * จึงต้องกันไว้ตั้งแต่ตอนบันทึก คืนค่าเป็นสตริงเสมอเพราะชีตเก็บเป็นข้อความ
+ */
+function sanitizeSetting_(key, value) {
+  var NUMERIC = {
+    revisionLimit: { min: 1, max: 20, label: 'จำนวนรอบแก้ไขสูงสุด' },
+    minLeadDays: { min: 0, max: 90, label: 'จำนวนวันล่วงหน้าขั้นต่ำ' },
+    slaFirstDraftDays: { min: 1, max: 90, label: 'จำนวนวันส่งร่างแรก' },
+    maxFileMB: { min: 1, max: 25, label: 'ขนาดไฟล์สูงสุด (MB)' },
+    maxFiles: { min: 1, max: 20, label: 'จำนวนไฟล์แนบสูงสุด' }
+  };
+  var BOOLEAN = ['notifyOwnerAlways', 'aiEnabled', 'publicFormOpen'];
+
+  if (Object.prototype.hasOwnProperty.call(NUMERIC, key)) {
+    var rule = NUMERIC[key];
+    var raw = str_(value);
+    if (!raw || !/^-?\d+$/.test(raw)) {
+      throw appError_(rule.label + ' ต้องเป็นตัวเลขจำนวนเต็มระหว่าง ' +
+        rule.min + ' ถึง ' + rule.max);
+    }
+    var n = int_(raw, rule.min);
+    if (n < rule.min || n > rule.max) {
+      throw appError_(rule.label + ' ต้องอยู่ระหว่าง ' + rule.min + ' ถึง ' + rule.max +
+        ' (ใส่มา ' + n + ')');
+    }
+    return String(n);
+  }
+
+  if (BOOLEAN.indexOf(key) >= 0) {
+    var b = str_(value).toLowerCase();
+    if (b === 'true' || b === '1' || b === 'yes') return 'true';
+    if (b === 'false' || b === '0' || b === 'no' || b === '') return 'false';
+    throw appError_('ค่าของ ' + key + ' ต้องเป็น true หรือ false เท่านั้น');
+  }
+
+  if (key === 'notifyEmails') {
+    var list = splitList_(value);
+    var clean = [];
+    for (var i = 0; i < list.length; i++) {
+      var email = str_(list[i]).toLowerCase();
+      if (!email) continue;
+      if (!isValidEmail_(email)) {
+        throw appError_('อีเมลผู้รับแจ้งเตือนไม่ถูกต้อง: ' + email +
+          ' กรุณาคั่นแต่ละอีเมลด้วยเครื่องหมายจุลภาค');
+      }
+      if (clean.indexOf(email) < 0) clean.push(email);
+    }
+    if (!clean.length) {
+      throw appError_('ต้องมีอีเมลผู้รับแจ้งเตือนอย่างน้อยหนึ่งรายชื่อ');
+    }
+    return clean.join(', ');
+  }
+
+  if (key === 'replyTo') {
+    var reply = str_(value).toLowerCase();
+    if (reply && !isValidEmail_(reply)) {
+      throw appError_('อีเมลสำหรับตอบกลับไม่ถูกต้อง: ' + reply);
+    }
+    return reply;
+  }
+
+  if (key === 'allowedFileTypes') {
+    var exts = splitList_(value);
+    var out = [];
+    for (var j = 0; j < exts.length; j++) {
+      var ext = str_(exts[j]).toLowerCase().replace(/^[.\s]+/, '').replace(/\s+/g, '');
+      if (!ext) continue;
+      if (!/^[a-z0-9]{1,10}$/.test(ext)) {
+        throw appError_('นามสกุลไฟล์ไม่ถูกต้อง: ' + exts[j] +
+          ' ให้ใส่เฉพาะตัวอักษรภาษาอังกฤษหรือตัวเลข เช่น pdf,jpg,png');
+      }
+      if (out.indexOf(ext) < 0) out.push(ext);
+    }
+    if (!out.length) {
+      throw appError_('ต้องระบุชนิดไฟล์ที่อนุญาตอย่างน้อยหนึ่งชนิด');
+    }
+    return out.join(',');
+  }
+
+  if (key === 'aiModel') {
+    var model = str_(value).trim();
+    if (!model) throw appError_('ต้องระบุชื่อโมเดลของ Claude');
+    if (!/^[A-Za-z0-9._-]{3,60}$/.test(model)) {
+      throw appError_('ชื่อโมเดลไม่ถูกต้อง เช่น claude-opus-5');
+    }
+    return model;
+  }
+
+  if (key === 'fromName') {
+    var from = truncate_(str_(value).replace(/[\r\n\t]+/g, ' '), 100);
+    if (!from) throw appError_('ต้องระบุชื่อผู้ส่งอีเมล');
+    return from;
+  }
+
+  if (key === 'closedMessage') {
+    return truncate_(str_(value), 500);
+  }
+
+  return truncate_(str_(value), 500);
+}

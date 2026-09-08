@@ -300,12 +300,16 @@ function workerTick() {
     }
   }
 
-  // 2) สรุป Design Brief (ครั้งละไม่เกิน 5 ใบ กันเวลาทำงานเกินโควตา)
+  // 2) สรุป Design Brief
+  //    จำกัดจำนวนต่อรอบและคุมเวลารวม เพราะการเรียก AI หนึ่งครั้งใช้เวลาไม่แน่นอน
+  //    และ Apps Script ตัดการทำงานที่เกิน 6 นาที ใบที่เหลือจะถูกทำในรอบถัดไป
+  var deadline = now.getTime() + 3.5 * 60 * 1000;
   var pending = readAll_(SHEET.REQUESTS).filter(function (r) {
     return str_(r.briefStatus) === 'PENDING' && str_(r.submittedAt);
-  }).slice(0, 5);
+  }).slice(0, 3);
 
   for (var j = 0; j < pending.length; j++) {
+    if (new Date().getTime() > deadline) break;
     try {
       generateBrief_(pending[j].jobId, false);
     } catch (err) {

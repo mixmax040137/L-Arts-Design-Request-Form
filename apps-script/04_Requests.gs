@@ -554,27 +554,126 @@ function addRevision_(jobId, email, token, comment) {
 /** ผู้ขอรับบริการอนุมัติร่างชิ้นงาน */
 function approveDraft_(jobId, email, token) {
   var id = str_(jobId).toUpperCase();
-  var req = getRequest_(id);
-  if (!req) throw appError_('ไม่พบเลขที่คำขอ ' + id);
+  var result = withLock_(function () {
+    var req = getRequest_(id);
+    if (!req) throw appError_('ไม่พบเลขที่คำขอ ' + id);
 
-  var authorized = (token && verifyTrackToken_(id, token)) ||
-    (email && str_(email).toLowerCase() === str_(req.requesterEmail).toLowerCase());
-  if (!authorized) throw appError_('ไม่มีสิทธิ์ดำเนินการกับคำขอนี้');
+    var authorized = (token && verifyTrackToken_(id, token)) ||
+      (email && str_(email).toLowerCase() === str_(req.requesterEmail).toLowerCase());
+    if (!authorized) throw appError_('ไม่มีสิทธิ์ดำเนินการกับคำขอนี้');
 
-  if (str_(req.status) !== STATUS.REVIEW.key) {
-    throw appError_('อนุมัติได้เฉพาะเมื่องานอยู่ในสถานะรอตรวจร่างเท่านั้น');
-  }
+    if (str_(req.status) !== STATUS.REVIEW.key) {
+      throw appError_('อนุมัติได้เฉพาะเมื่องานอยู่ในสถานะรอตรวจร่างเท่านั้น');
+    }
 
-  logTimeline_(id, req.requesterName, 'APPROVE', STATUS.REVIEW.key, STATUS.REVIEW.key,
-    'ผู้ขอรับบริการอนุมัติร่างชิ้นงานแล้ว รอเจ้าหน้าที่ส่งมอบไฟล์ฉบับสมบูรณ์');
-  update_(SHEET.REQUESTS, req._row, { updatedAt: nowIso_(), updatedBy: req.requesterEmail });
+    logTimeline_(id, req.requesterName, 'APPROVE', STATUS.REVIEW.key, STATUS.REVIEW.key,
+      'ผู้ขอรับบริการอนุมัติร่างชิ้นงานแล้ว รอเจ้าหน้าที่ส่งมอบไฟล์ฉบับสมบูรณ์');
+    update_(SHEET.REQUESTS, req._row, { updatedAt: nowIso_(), updatedBy: req.requesterEmail });
+    return { jobId: id, approved: true };
+  });
 
   try {
     sendApprovalToStaffEmail_(getRequest_(id));
   } catch (err) {
     logTimeline_(id, 'system', 'EMAIL_ERROR', '', '', 'แจ้งเจ้าหน้าที่เรื่องอนุมัติไม่สำเร็จ: ' + err.message);
   }
-  return { jobId: id, approved: true };
+  return result;
+}
+
+/* ------------------------------------------------------------- การลบข้อมูล */
+
+/** ย้ายโฟลเดอร์ของงานลงถังขยะ (ไม่โยน error หากโฟลเดอร์หายไปแล้ว) */
+function trashJobFolder_(folderId) {
+  var id = str_(folderId);
+  if (!id) return false;
+  try {
+    DriveApp.getFolderById(id).setTrashed(true);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
+ * ลบคำขอถาวร พร้อมข้อมูลที่เกี่ยวข้องทั้งหมด
+ * ใช้กับข้อมูลทดสอบหรือคำขอที่ยื่นผิด ไม่ใช่การยกเลิกงาน (ยกเลิกให้ใช้สถานะ CANCELLED)
+ *
+ * ลบ: แถวในชีต Requests, Deliverables, Attachments, Revisions, Timeline
+ *     และย้ายโฟลเดอร์งานใน Drive ลงถังขยะ (กู้คืนได้ 30 วัน)
+ * ไม่ลบ: เลขที่คำขอในตัวนับ เลขถัดไปจึงไม่ย้อนกลับ
+ */
+function deleteRequest_(jobId, actor) {
+  return withLock_(function () {
+    var id = str_(jobId).toUpperCase();
+    var req = getRequest_(id);
+    if (!req) throw appError_('ไม่พบเลขที่คำขอ ' + id);
+
+    var summary = {
+      jobId: id,
+      projectName: str_(req.projectName),
+      deliverables: 0,
+      attachments: 0,
+      revisions: 0,
+      timeline: 0,
+      folderTrashed: false
+    };
+
+    // ย้ายไฟล์แนบทั้งหมดลงถังขยะก่อน แล้วจึงย้ายทั้งโฟลเดอร์
+    var files = filterBy_(SHEET.ATTACHMENTS, 'jobId', id);
+    for (var i = 0; i < files.length; i++) {
+      try {
+        DriveApp.getFileById(str_(files[i].fileId)).setTrashed(true);
+      } catch (err) {
+        // ไฟล์อาจถูกลบไปแล้ว ข้ามได้
+      }
+    }
+    summary.folderTrashed = trashJobFolder_(req.folderId);
+
+    summary.deliverables = removeWhere_(SHEET.DELIVERABLES, 'jobId', id);
+    summary.attachments = removeWhere_(SHEET.ATTACHMENTS, 'jobId', id);
+    summary.revisions = removeWhere_(SHEET.REVISIONS, 'jobId', id);
+    summary.timeline = removeWhere_(SHEET.TIMELINE, 'jobId', id);
+    remove_(SHEET.REQUESTS, req._row);
+
+    // เก็บร่องรอยไว้ตรวจสอบย้อนหลังว่าใครลบอะไรเมื่อไหร่
+    // บันทึกใต้ SYSTEM ไม่ใช่ใต้เลขที่คำขอ เพราะเลขนั้นถูกลบไปแล้ว
+    // ถ้าบันทึกใต้เลขเดิมจะกลายเป็นแถวกำพร้าและโผล่กลับมาถ้ามีการออกเลขซ้ำ
+    logTimeline_('SYSTEM', actor, 'DELETE_REQUEST', str_(req.status), '',
+      'ลบคำขอถาวร ' + id + ': ' + truncate_(req.projectName, 120) +
+      ' (ผู้ขอ ' + truncate_(req.requesterName, 80) + ')');
+
+    return summary;
+  });
+}
+
+/**
+ * ล้างคำขอทั้งหมดเพื่อเริ่มใช้งานจริง
+ * ใช้ครั้งเดียวหลังทดลองกรอกข้อมูลเสร็จ
+ * เก็บบัญชีเจ้าหน้าที่และค่าตั้งค่าไว้ทั้งหมด
+ */
+function resetAllRequests_(actor) {
+  return withLock_(function () {
+    var rows = readAll_(SHEET.REQUESTS);
+    var trashed = 0;
+    for (var i = 0; i < rows.length; i++) {
+      if (trashJobFolder_(rows[i].folderId)) trashed++;
+    }
+
+    var summary = {
+      requests: clearSheetRows_(SHEET.REQUESTS),
+      deliverables: clearSheetRows_(SHEET.DELIVERABLES),
+      attachments: clearSheetRows_(SHEET.ATTACHMENTS),
+      revisions: clearSheetRows_(SHEET.REVISIONS),
+      timeline: clearSheetRows_(SHEET.TIMELINE),
+      counters: clearSheetRows_(SHEET.COUNTERS),
+      foldersTrashed: trashed
+    };
+
+    logTimeline_('SYSTEM', actor, 'RESET_DATA', '', '',
+      'ล้างข้อมูลคำขอทั้งหมด ' + summary.requests + ' รายการ และรีเซ็ตเลขที่คำขอกลับเป็น 0001');
+
+    return summary;
+  });
 }
 
 /* ------------------------------------------------------------- Admin list */

@@ -361,6 +361,37 @@ function apiAdminRegenerateBrief(token, jobId) {
   });
 }
 
+/**
+ * ลบคำขอถาวร (เฉพาะผู้ดูแลระบบ)
+ * ต้องพิมพ์เลขที่คำขอยืนยันให้ตรง เพื่อกันการกดพลาด
+ */
+function apiAdminDeleteRequest(token, jobId, confirmText) {
+  return respond_(function () {
+    var me = requireAdmin_(token);
+    var id = str_(jobId).toUpperCase();
+    if (str_(confirmText).toUpperCase().replace(/\s/g, '') !== id.replace(/\s/g, '')) {
+      throw appError_('กรุณาพิมพ์เลขที่คำขอ ' + id + ' ให้ตรงเพื่อยืนยันการลบ');
+    }
+    return deleteRequest_(id, me.name || me.email);
+  });
+}
+
+/**
+ * ล้างคำขอทั้งหมดเพื่อเริ่มใช้งานจริง (เฉพาะผู้ดูแลระบบ)
+ * เก็บบัญชีเจ้าหน้าที่และค่าตั้งค่าไว้
+ */
+var RESET_CONFIRM_TEXT = 'ล้างข้อมูลทั้งหมด';
+
+function apiAdminResetData(token, confirmText) {
+  return respond_(function () {
+    var me = requireAdmin_(token);
+    if (str_(confirmText) !== RESET_CONFIRM_TEXT) {
+      throw appError_('กรุณาพิมพ์ข้อความ "' + RESET_CONFIRM_TEXT + '" ให้ตรงเพื่อยืนยัน');
+    }
+    return resetAllRequests_(me.name || me.email);
+  });
+}
+
 function apiAdminStats(token, filter) {
   return respond_(function () {
     requireAuth_(token);
@@ -445,7 +476,7 @@ function apiAdminSaveSettings(token, patch) {
     for (var key in p) {
       if (!Object.prototype.hasOwnProperty.call(p, key)) continue;
       if (!Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, key)) continue;
-      setSetting_(key, p[key]);
+      setSetting_(key, sanitizeSetting_(key, p[key]));
       saved++;
     }
     return { saved: saved };

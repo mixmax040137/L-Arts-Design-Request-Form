@@ -465,6 +465,109 @@ function splitList_(v) {
   return str_(v).split(',').map(function (x) { return x.trim(); }).filter(function (x) { return !!x; });
 }
 
+/**
+ * ตรวจและปรับค่าตั้งค่าให้อยู่ในช่วงที่ระบบทำงานได้จริง
+ * ค่าที่พิมพ์ผิด เช่น maxFileMB = 999 หรือ 0 จะทำให้อัปโหลดไฟล์พังทั้งระบบ
+ * จึงต้องกันไว้ตั้งแต่ตอนบันทึก คืนค่าเป็นสตริงเสมอเพราะชีตเก็บเป็นข้อความ
+ */
+function sanitizeSetting_(key, value) {
+  var NUMERIC = {
+    revisionLimit: { min: 1, max: 20, label: 'จำนวนรอบแก้ไขสูงสุด' },
+    minLeadDays: { min: 0, max: 90, label: 'จำนวนวันล่วงหน้าขั้นต่ำ' },
+    slaFirstDraftDays: { min: 1, max: 90, label: 'จำนวนวันส่งร่างแรก' },
+    maxFileMB: { min: 1, max: 25, label: 'ขนาดไฟล์สูงสุด (MB)' },
+    maxFiles: { min: 1, max: 20, label: 'จำนวนไฟล์แนบสูงสุด' }
+  };
+  var BOOLEAN = ['notifyOwnerAlways', 'aiEnabled', 'publicFormOpen'];
+
+  if (Object.prototype.hasOwnProperty.call(NUMERIC, key)) {
+    var rule = NUMERIC[key];
+    var raw = str_(value);
+    if (!raw || !/^-?\d+$/.test(raw)) {
+      throw appError_(rule.label + ' ต้องเป็นตัวเลขจำนวนเต็มระหว่าง ' +
+        rule.min + ' ถึง ' + rule.max);
+    }
+    var n = int_(raw, rule.min);
+    if (n < rule.min || n > rule.max) {
+      throw appError_(rule.label + ' ต้องอยู่ระหว่าง ' + rule.min + ' ถึง ' + rule.max +
+        ' (ใส่มา ' + n + ')');
+    }
+    return String(n);
+  }
+
+  if (BOOLEAN.indexOf(key) >= 0) {
+    var b = str_(value).toLowerCase();
+    if (b === 'true' || b === '1' || b === 'yes') return 'true';
+    if (b === 'false' || b === '0' || b === 'no' || b === '') return 'false';
+    throw appError_('ค่าของ ' + key + ' ต้องเป็น true หรือ false เท่านั้น');
+  }
+
+  if (key === 'notifyEmails') {
+    var list = splitList_(value);
+    var clean = [];
+    for (var i = 0; i < list.length; i++) {
+      var email = str_(list[i]).toLowerCase();
+      if (!email) continue;
+      if (!isValidEmail_(email)) {
+        throw appError_('อีเมลผู้รับแจ้งเตือนไม่ถูกต้อง: ' + email +
+          ' กรุณาคั่นแต่ละอีเมลด้วยเครื่องหมายจุลภาค');
+      }
+      if (clean.indexOf(email) < 0) clean.push(email);
+    }
+    if (!clean.length) {
+      throw appError_('ต้องมีอีเมลผู้รับแจ้งเตือนอย่างน้อยหนึ่งรายชื่อ');
+    }
+    return clean.join(', ');
+  }
+
+  if (key === 'replyTo') {
+    var reply = str_(value).toLowerCase();
+    if (reply && !isValidEmail_(reply)) {
+      throw appError_('อีเมลสำหรับตอบกลับไม่ถูกต้อง: ' + reply);
+    }
+    return reply;
+  }
+
+  if (key === 'allowedFileTypes') {
+    var exts = splitList_(value);
+    var out = [];
+    for (var j = 0; j < exts.length; j++) {
+      var ext = str_(exts[j]).toLowerCase().replace(/^[.\s]+/, '').replace(/\s+/g, '');
+      if (!ext) continue;
+      if (!/^[a-z0-9]{1,10}$/.test(ext)) {
+        throw appError_('นามสกุลไฟล์ไม่ถูกต้อง: ' + exts[j] +
+          ' ให้ใส่เฉพาะตัวอักษรภาษาอังกฤษหรือตัวเลข เช่น pdf,jpg,png');
+      }
+      if (out.indexOf(ext) < 0) out.push(ext);
+    }
+    if (!out.length) {
+      throw appError_('ต้องระบุชนิดไฟล์ที่อนุญาตอย่างน้อยหนึ่งชนิด');
+    }
+    return out.join(',');
+  }
+
+  if (key === 'aiModel') {
+    var model = str_(value).trim();
+    if (!model) throw appError_('ต้องระบุชื่อโมเดลของ Claude');
+    if (!/^[A-Za-z0-9._-]{3,60}$/.test(model)) {
+      throw appError_('ชื่อโมเดลไม่ถูกต้อง เช่น claude-opus-5');
+    }
+    return model;
+  }
+
+  if (key === 'fromName') {
+    var from = truncate_(str_(value).replace(/[\r\n\t]+/g, ' '), 100);
+    if (!from) throw appError_('ต้องระบุชื่อผู้ส่งอีเมล');
+    return from;
+  }
+
+  if (key === 'closedMessage') {
+    return truncate_(str_(value), 500);
+  }
+
+  return truncate_(str_(value), 500);
+}
+
 
 /* ==========================================================================
    02_Store.gs
@@ -618,6 +721,37 @@ function update_(name, rowIndex, patch) {
 function remove_(name, rowIndex) {
   var sh = sheet_(name);
   sh.deleteRow(rowIndex);
+}
+
+/**
+ * ลบทุกแถวที่คอลัมน์ key มีค่าตรงกับ value คืนจำนวนแถวที่ลบ
+ * ลบจากแถวล่างขึ้นบนเสมอ เพื่อไม่ให้เลขแถวที่เหลือเลื่อนระหว่างลบ
+ */
+function removeWhere_(name, key, value) {
+  var cols = COLUMNS[name];
+  var idx = cols.indexOf(key);
+  if (idx < 0) throw new Error('ไม่พบคอลัมน์ ' + key + ' ในชีต ' + name);
+  var sh = sheet_(name);
+  var lastRow = sh.getLastRow();
+  if (lastRow < 2) return 0;
+
+  var target = str_(value);
+  var values = sh.getRange(2, idx + 1, lastRow - 1, 1).getValues();
+  var rows = [];
+  for (var i = 0; i < values.length; i++) {
+    if (str_(values[i][0]) === target) rows.push(i + 2);
+  }
+  for (var r = rows.length - 1; r >= 0; r--) sh.deleteRow(rows[r]);
+  return rows.length;
+}
+
+/** ลบข้อมูลทุกแถวของชีต โดยคงหัวตารางไว้ คืนจำนวนแถวที่ลบ */
+function clearSheetRows_(name) {
+  var sh = sheet_(name);
+  var lastRow = sh.getLastRow();
+  if (lastRow < 2) return 0;
+  sh.deleteRows(2, lastRow - 1);
+  return lastRow - 1;
 }
 
 /**
@@ -1777,27 +1911,126 @@ function addRevision_(jobId, email, token, comment) {
 /** ผู้ขอรับบริการอนุมัติร่างชิ้นงาน */
 function approveDraft_(jobId, email, token) {
   var id = str_(jobId).toUpperCase();
-  var req = getRequest_(id);
-  if (!req) throw appError_('ไม่พบเลขที่คำขอ ' + id);
+  var result = withLock_(function () {
+    var req = getRequest_(id);
+    if (!req) throw appError_('ไม่พบเลขที่คำขอ ' + id);
 
-  var authorized = (token && verifyTrackToken_(id, token)) ||
-    (email && str_(email).toLowerCase() === str_(req.requesterEmail).toLowerCase());
-  if (!authorized) throw appError_('ไม่มีสิทธิ์ดำเนินการกับคำขอนี้');
+    var authorized = (token && verifyTrackToken_(id, token)) ||
+      (email && str_(email).toLowerCase() === str_(req.requesterEmail).toLowerCase());
+    if (!authorized) throw appError_('ไม่มีสิทธิ์ดำเนินการกับคำขอนี้');
 
-  if (str_(req.status) !== STATUS.REVIEW.key) {
-    throw appError_('อนุมัติได้เฉพาะเมื่องานอยู่ในสถานะรอตรวจร่างเท่านั้น');
-  }
+    if (str_(req.status) !== STATUS.REVIEW.key) {
+      throw appError_('อนุมัติได้เฉพาะเมื่องานอยู่ในสถานะรอตรวจร่างเท่านั้น');
+    }
 
-  logTimeline_(id, req.requesterName, 'APPROVE', STATUS.REVIEW.key, STATUS.REVIEW.key,
-    'ผู้ขอรับบริการอนุมัติร่างชิ้นงานแล้ว รอเจ้าหน้าที่ส่งมอบไฟล์ฉบับสมบูรณ์');
-  update_(SHEET.REQUESTS, req._row, { updatedAt: nowIso_(), updatedBy: req.requesterEmail });
+    logTimeline_(id, req.requesterName, 'APPROVE', STATUS.REVIEW.key, STATUS.REVIEW.key,
+      'ผู้ขอรับบริการอนุมัติร่างชิ้นงานแล้ว รอเจ้าหน้าที่ส่งมอบไฟล์ฉบับสมบูรณ์');
+    update_(SHEET.REQUESTS, req._row, { updatedAt: nowIso_(), updatedBy: req.requesterEmail });
+    return { jobId: id, approved: true };
+  });
 
   try {
     sendApprovalToStaffEmail_(getRequest_(id));
   } catch (err) {
     logTimeline_(id, 'system', 'EMAIL_ERROR', '', '', 'แจ้งเจ้าหน้าที่เรื่องอนุมัติไม่สำเร็จ: ' + err.message);
   }
-  return { jobId: id, approved: true };
+  return result;
+}
+
+/* ------------------------------------------------------------- การลบข้อมูล */
+
+/** ย้ายโฟลเดอร์ของงานลงถังขยะ (ไม่โยน error หากโฟลเดอร์หายไปแล้ว) */
+function trashJobFolder_(folderId) {
+  var id = str_(folderId);
+  if (!id) return false;
+  try {
+    DriveApp.getFolderById(id).setTrashed(true);
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+/**
+ * ลบคำขอถาวร พร้อมข้อมูลที่เกี่ยวข้องทั้งหมด
+ * ใช้กับข้อมูลทดสอบหรือคำขอที่ยื่นผิด ไม่ใช่การยกเลิกงาน (ยกเลิกให้ใช้สถานะ CANCELLED)
+ *
+ * ลบ: แถวในชีต Requests, Deliverables, Attachments, Revisions, Timeline
+ *     และย้ายโฟลเดอร์งานใน Drive ลงถังขยะ (กู้คืนได้ 30 วัน)
+ * ไม่ลบ: เลขที่คำขอในตัวนับ เลขถัดไปจึงไม่ย้อนกลับ
+ */
+function deleteRequest_(jobId, actor) {
+  return withLock_(function () {
+    var id = str_(jobId).toUpperCase();
+    var req = getRequest_(id);
+    if (!req) throw appError_('ไม่พบเลขที่คำขอ ' + id);
+
+    var summary = {
+      jobId: id,
+      projectName: str_(req.projectName),
+      deliverables: 0,
+      attachments: 0,
+      revisions: 0,
+      timeline: 0,
+      folderTrashed: false
+    };
+
+    // ย้ายไฟล์แนบทั้งหมดลงถังขยะก่อน แล้วจึงย้ายทั้งโฟลเดอร์
+    var files = filterBy_(SHEET.ATTACHMENTS, 'jobId', id);
+    for (var i = 0; i < files.length; i++) {
+      try {
+        DriveApp.getFileById(str_(files[i].fileId)).setTrashed(true);
+      } catch (err) {
+        // ไฟล์อาจถูกลบไปแล้ว ข้ามได้
+      }
+    }
+    summary.folderTrashed = trashJobFolder_(req.folderId);
+
+    summary.deliverables = removeWhere_(SHEET.DELIVERABLES, 'jobId', id);
+    summary.attachments = removeWhere_(SHEET.ATTACHMENTS, 'jobId', id);
+    summary.revisions = removeWhere_(SHEET.REVISIONS, 'jobId', id);
+    summary.timeline = removeWhere_(SHEET.TIMELINE, 'jobId', id);
+    remove_(SHEET.REQUESTS, req._row);
+
+    // เก็บร่องรอยไว้ตรวจสอบย้อนหลังว่าใครลบอะไรเมื่อไหร่
+    // บันทึกใต้ SYSTEM ไม่ใช่ใต้เลขที่คำขอ เพราะเลขนั้นถูกลบไปแล้ว
+    // ถ้าบันทึกใต้เลขเดิมจะกลายเป็นแถวกำพร้าและโผล่กลับมาถ้ามีการออกเลขซ้ำ
+    logTimeline_('SYSTEM', actor, 'DELETE_REQUEST', str_(req.status), '',
+      'ลบคำขอถาวร ' + id + ': ' + truncate_(req.projectName, 120) +
+      ' (ผู้ขอ ' + truncate_(req.requesterName, 80) + ')');
+
+    return summary;
+  });
+}
+
+/**
+ * ล้างคำขอทั้งหมดเพื่อเริ่มใช้งานจริง
+ * ใช้ครั้งเดียวหลังทดลองกรอกข้อมูลเสร็จ
+ * เก็บบัญชีเจ้าหน้าที่และค่าตั้งค่าไว้ทั้งหมด
+ */
+function resetAllRequests_(actor) {
+  return withLock_(function () {
+    var rows = readAll_(SHEET.REQUESTS);
+    var trashed = 0;
+    for (var i = 0; i < rows.length; i++) {
+      if (trashJobFolder_(rows[i].folderId)) trashed++;
+    }
+
+    var summary = {
+      requests: clearSheetRows_(SHEET.REQUESTS),
+      deliverables: clearSheetRows_(SHEET.DELIVERABLES),
+      attachments: clearSheetRows_(SHEET.ATTACHMENTS),
+      revisions: clearSheetRows_(SHEET.REVISIONS),
+      timeline: clearSheetRows_(SHEET.TIMELINE),
+      counters: clearSheetRows_(SHEET.COUNTERS),
+      foldersTrashed: trashed
+    };
+
+    logTimeline_('SYSTEM', actor, 'RESET_DATA', '', '',
+      'ล้างข้อมูลคำขอทั้งหมด ' + summary.requests + ' รายการ และรีเซ็ตเลขที่คำขอกลับเป็น 0001');
+
+    return summary;
+  });
 }
 
 /* ------------------------------------------------------------- Admin list */
@@ -1970,7 +2203,22 @@ function uploadAttachment_(jobId, payload, kind, uploader) {
   var finalSeq = existing.filter(function (f) { return str_(f.kind) === 'final'; }).length + 1;
   var storedName = standardFileName_(req, fileName, fileKind, finalSeq);
 
-  var folder = DriveApp.getFolderById(req.folderId);
+  // โฟลเดอร์อาจถูกลบหรือย้ายไปถังขยะ ให้สร้างใหม่แทนที่จะล้มเหลวทั้งคำขอ
+  var folder;
+  try {
+    folder = DriveApp.getFolderById(req.folderId);
+    if (folder.isTrashed()) throw new Error('โฟลเดอร์อยู่ในถังขยะ');
+  } catch (err) {
+    var rebuilt = createJobFolder_(req.jobId, req.projectName);
+    update_(SHEET.REQUESTS, req._row, {
+      folderId: rebuilt.id, folderUrl: rebuilt.url, updatedAt: nowIso_()
+    });
+    req.folderId = rebuilt.id;
+    req.folderUrl = rebuilt.url;
+    folder = DriveApp.getFolderById(rebuilt.id);
+    logTimeline_(req.jobId, 'system', 'NOTE', '', '',
+      'ไม่พบโฟลเดอร์เดิมของงาน ระบบจึงสร้างโฟลเดอร์ใหม่ให้อัตโนมัติ');
+  }
   var blob = Utilities.newBlob(bytes, mime, storedName);
   var file = folder.createFile(blob);
 
@@ -2136,13 +2384,22 @@ function listAssetLibrary_(filter) {
  * 06_Mailer.gs — อีเมลแจ้งเตือนทุกชนิด
  */
 
+/**
+ * ทำความสะอาดหัวข้ออีเมล
+ * ตัดอักขระขึ้นบรรทัดใหม่ออก เพราะข้อมูลจากผู้ใช้ (เช่น ชื่อโครงการ) ถูกนำมาต่อในหัวข้อ
+ * หากมีการขึ้นบรรทัดใหม่ปนมา อาจถูกใช้แทรก header ของอีเมลได้
+ */
+function mailSubject_(subject) {
+  return truncate_(str_(subject).replace(/[\r\n\t]+/g, ' '), 200);
+}
+
 /** ส่งอีเมล (คืน true/false ไม่โยน error ออกไปนอกจากผู้เรียกต้องการ) */
 function sendMail_(to, subject, htmlBody) {
   var recipients = Array.isArray(to) ? to.join(',') : str_(to);
   if (!recipients) return false;
   MailApp.sendEmail({
     to: recipients,
-    subject: subject,
+    subject: mailSubject_(subject),
     htmlBody: htmlBody,
     name: getSetting_('fromName', DEFAULT_SETTINGS.fromName),
     replyTo: getSetting_('replyTo', DEFAULT_SETTINGS.replyTo)
@@ -2793,12 +3050,16 @@ function workerTick() {
     }
   }
 
-  // 2) สรุป Design Brief (ครั้งละไม่เกิน 5 ใบ กันเวลาทำงานเกินโควตา)
+  // 2) สรุป Design Brief
+  //    จำกัดจำนวนต่อรอบและคุมเวลารวม เพราะการเรียก AI หนึ่งครั้งใช้เวลาไม่แน่นอน
+  //    และ Apps Script ตัดการทำงานที่เกิน 6 นาที ใบที่เหลือจะถูกทำในรอบถัดไป
+  var deadline = now.getTime() + 3.5 * 60 * 1000;
   var pending = readAll_(SHEET.REQUESTS).filter(function (r) {
     return str_(r.briefStatus) === 'PENDING' && str_(r.submittedAt);
-  }).slice(0, 5);
+  }).slice(0, 3);
 
   for (var j = 0; j < pending.length; j++) {
+    if (new Date().getTime() > deadline) break;
     try {
       generateBrief_(pending[j].jobId, false);
     } catch (err) {
@@ -3574,6 +3835,37 @@ function apiAdminRegenerateBrief(token, jobId) {
   });
 }
 
+/**
+ * ลบคำขอถาวร (เฉพาะผู้ดูแลระบบ)
+ * ต้องพิมพ์เลขที่คำขอยืนยันให้ตรง เพื่อกันการกดพลาด
+ */
+function apiAdminDeleteRequest(token, jobId, confirmText) {
+  return respond_(function () {
+    var me = requireAdmin_(token);
+    var id = str_(jobId).toUpperCase();
+    if (str_(confirmText).toUpperCase().replace(/\s/g, '') !== id.replace(/\s/g, '')) {
+      throw appError_('กรุณาพิมพ์เลขที่คำขอ ' + id + ' ให้ตรงเพื่อยืนยันการลบ');
+    }
+    return deleteRequest_(id, me.name || me.email);
+  });
+}
+
+/**
+ * ล้างคำขอทั้งหมดเพื่อเริ่มใช้งานจริง (เฉพาะผู้ดูแลระบบ)
+ * เก็บบัญชีเจ้าหน้าที่และค่าตั้งค่าไว้
+ */
+var RESET_CONFIRM_TEXT = 'ล้างข้อมูลทั้งหมด';
+
+function apiAdminResetData(token, confirmText) {
+  return respond_(function () {
+    var me = requireAdmin_(token);
+    if (str_(confirmText) !== RESET_CONFIRM_TEXT) {
+      throw appError_('กรุณาพิมพ์ข้อความ "' + RESET_CONFIRM_TEXT + '" ให้ตรงเพื่อยืนยัน');
+    }
+    return resetAllRequests_(me.name || me.email);
+  });
+}
+
 function apiAdminStats(token, filter) {
   return respond_(function () {
     requireAuth_(token);
@@ -3658,7 +3950,7 @@ function apiAdminSaveSettings(token, patch) {
     for (var key in p) {
       if (!Object.prototype.hasOwnProperty.call(p, key)) continue;
       if (!Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, key)) continue;
-      setSetting_(key, p[key]);
+      setSetting_(key, sanitizeSetting_(key, p[key]));
       saved++;
     }
     return { saved: saved };

@@ -853,7 +853,7 @@ group('10. งานเบื้องหลัง (workerTick)');
     assert(app.state.outbox.length >= 1, 'ต้องส่งอีเมลยืนยันให้ด้วย');
   });
 
-  test('ประมวลผลได้สูงสุด 5 ใบต่อรอบ กันเวลาทำงานเกินโควตา', () => {
+  test('ประมวลผลได้สูงสุด 3 ใบต่อรอบ กันเวลาทำงานเกินโควตา', () => {
     const app = bootstrapApp({ fetchHandler: claudeOkHandler });
     app.ctx.setAnthropicApiKey('sk-ant-test-key');
     for (let i = 0; i < 7; i++) {
@@ -862,9 +862,12 @@ group('10. งานเบื้องหลัง (workerTick)');
     }
     app.ctx.workerTick();
     const done = app.ctx.readAll_('Requests').filter((r) => r.briefStatus === 'DONE').length;
-    assertEqual(done, 5);
+    assertEqual(done, 3, 'หนึ่งรอบต้องทำไม่เกิน 3 ใบ เพราะ UrlFetch หนึ่งครั้งใช้เวลานาน');
     app.ctx.workerTick();
-    assertEqual(app.ctx.readAll_('Requests').filter((r) => r.briefStatus === 'DONE').length, 7);
+    app.ctx.workerTick();
+    app.ctx.workerTick();
+    assertEqual(app.ctx.readAll_('Requests').filter((r) => r.briefStatus === 'DONE').length, 7,
+      'รอบถัดไปต้องทำงานที่ค้างต่อจนครบ');
   });
 
   test('workerTick ไม่พังเมื่อระบบยังไม่ติดตั้ง', () => {
@@ -1752,6 +1755,258 @@ group('19. URL ของเว็บแอปในลิงก์อีเม�
     const log = app.state.logs.join('\n');
     assert(log.indexOf('ยังไม่พบ URL ของเว็บแอป') >= 0, 'ต้องบอกว่าหาไม่เจอ');
     assert(log.indexOf('Library') >= 0, 'ต้องเตือนเรื่องคัดลอกช่อง Library ผิด');
+  });
+}
+
+/* ==========================================================================
+   20. ลบคำขอและล้างข้อมูลทดลอง
+   ========================================================================== */
+group('20. ลบคำขอและล้างข้อมูลทดลอง');
+
+{
+  /** สร้างระบบพร้อมคำขอหนึ่งใบที่มีไฟล์แนบ ชิ้นงาน และประวัติครบ */
+  function appWithOneJob() {
+    const app = bootstrapApp();
+    const adminToken = app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token;
+    const job = app.ctx.createRequest_(samplePayload());
+    app.ctx.uploadAttachment_(job.jobId, {
+      fileName: 'brief.pdf', mimeType: 'application/pdf',
+      dataB64: Utilities0.base64Encode('เนื้อหาทดสอบ')
+    }, 'source', 'thitiwut@arts.tu.ac.th');
+    app.ctx.finalizeRequest_(job.jobId);
+    return { app, adminToken, job };
+  }
+
+  const Utilities0 = loadApp().ctx.Utilities;
+
+  test('ลบคำขอแล้วข้อมูลที่เกี่ยวข้องหายทุกชีต ไม่เหลือแถวกำพร้า', () => {
+    const { app, job } = appWithOneJob();
+    const before = app.ctx.readAll_('Attachments').length;
+    assert(before > 0, 'ต้องมีไฟล์แนบก่อนลบ');
+
+    const summary = app.ctx.deleteRequest_(job.jobId, 'ผู้ดูแลระบบ');
+    assertEqual(summary.jobId, job.jobId);
+    assert(summary.deliverables > 0, 'ต้องลบรายการชิ้นงานด้วย');
+    assert(summary.attachments > 0, 'ต้องลบทะเบียนไฟล์ด้วย');
+
+    assertEqual(app.ctx.getRequest_(job.jobId), null, 'คำขอต้องหายไปแล้ว');
+    assertEqual(app.ctx.filterBy_('Deliverables', 'jobId', job.jobId).length, 0);
+    assertEqual(app.ctx.filterBy_('Attachments', 'jobId', job.jobId).length, 0);
+    assertEqual(app.ctx.filterBy_('Revisions', 'jobId', job.jobId).length, 0);
+    assertEqual(app.ctx.filterBy_('Timeline', 'jobId', job.jobId).length, 0);
+  });
+
+  test('ลบคำขอแล้วย้ายโฟลเดอร์และไฟล์บน Drive ลงถังขยะ', () => {
+    const { app, job } = appWithOneJob();
+    const req = app.ctx.getRequest_(job.jobId);
+    const folderId = req.folderId;
+    const fileId = app.ctx.filterBy_('Attachments', 'jobId', job.jobId)[0].fileId;
+
+    const summary = app.ctx.deleteRequest_(job.jobId, 'ผู้ดูแลระบบ');
+    assertEqual(summary.folderTrashed, true, 'ต้องย้ายโฟลเดอร์ลงถังขยะ');
+    assertEqual(app.state.drive.files[fileId].trashed, true, 'ไฟล์ต้องอยู่ในถังขยะ');
+    assertEqual(app.state.drive.folders[folderId].trashed, true, 'โฟลเดอร์ต้องอยู่ในถังขยะ');
+  });
+
+  test('ลบคำขอที่ไม่มีอยู่จริงต้องบอกให้ชัด', () => {
+    const app = bootstrapApp();
+    assertThrows(() => app.ctx.deleteRequest_('DR-2569-9999', 'ผู้ดูแลระบบ'),
+      'ไม่พบเลขที่คำขอ');
+  });
+
+  test('ลบคำขอผ่านหน้าเว็บได้เฉพาะผู้ดูแลระบบ', () => {
+    const { app, job } = appWithOneJob();
+    app.ctx.saveUser_(app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token, {
+      email: 'staff@arts.tu.ac.th', name: 'เจ้าหน้าที่', role: 'staff', password: 'StaffPass123'
+    });
+    const staffToken = app.ctx.login_('staff@arts.tu.ac.th', 'StaffPass123').token;
+
+    assertEqual(app.ctx.apiAdminDeleteRequest(staffToken, job.jobId, job.jobId).ok, false,
+      'เจ้าหน้าที่ทั่วไปต้องลบไม่ได้');
+    assertEqual(app.ctx.apiAdminDeleteRequest('', job.jobId, job.jobId).ok, false,
+      'ไม่มี token ต้องลบไม่ได้');
+    assert(!!app.ctx.getRequest_(job.jobId), 'คำขอต้องยังอยู่');
+  });
+
+  test('ต้องพิมพ์เลขที่คำขอให้ตรงจึงจะลบได้', () => {
+    const { app, adminToken, job } = appWithOneJob();
+    const wrong = app.ctx.apiAdminDeleteRequest(adminToken, job.jobId, 'DR-2569-0002');
+    assertEqual(wrong.ok, false);
+    assert(wrong.error.indexOf(job.jobId) >= 0, 'ต้องบอกเลขที่ที่ถูกต้องในข้อความ');
+    assert(!!app.ctx.getRequest_(job.jobId), 'พิมพ์ผิดต้องไม่ลบ');
+
+    const ok = app.ctx.apiAdminDeleteRequest(adminToken, job.jobId, job.jobId.toLowerCase());
+    assertEqual(ok.ok, true, 'พิมพ์ตัวเล็กต้องยังผ่าน');
+    assertEqual(app.ctx.getRequest_(job.jobId), null);
+  });
+
+  test('ล้างข้อมูลทั้งหมดแล้วเลขที่คำขอเริ่มนับใหม่จาก 0001', () => {
+    const app = bootstrapApp();
+    let last = '';
+    for (let i = 0; i < 3; i++) last = app.ctx.createRequest_(samplePayload()).jobId;
+    assert(last.indexOf('0003') > 0, 'ควรออกเลขถึงใบที่ 3 แล้ว ได้ ' + last);
+
+    const summary = app.ctx.resetAllRequests_('ผู้ดูแลระบบ');
+    assertEqual(summary.requests, 3);
+    assertEqual(app.ctx.listRequests_({}).length, 0, 'คิวงานต้องว่าง');
+
+    const fresh = app.ctx.createRequest_(samplePayload());
+    assert(fresh.jobId.indexOf('0001') > 0, 'ต้องเริ่มนับใหม่ ได้ ' + fresh.jobId);
+  });
+
+  test('ล้างข้อมูลไม่แตะบัญชีผู้ใช้และค่าตั้งค่า', () => {
+    const app = bootstrapApp();
+    app.ctx.createRequest_(samplePayload());
+    const usersBefore = app.ctx.readAll_('Users').length;
+    const limitBefore = app.ctx.getSetting_('revisionLimit', '3');
+
+    app.ctx.resetAllRequests_('ผู้ดูแลระบบ');
+    assertEqual(app.ctx.readAll_('Users').length, usersBefore, 'บัญชีต้องอยู่ครบ');
+    assertEqual(app.ctx.getSetting_('revisionLimit', '3'), limitBefore, 'ค่าตั้งค่าต้องไม่หาย');
+    assert(!!app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token, 'ต้องยังเข้าสู่ระบบได้');
+  });
+
+  test('ล้างข้อมูลผ่านหน้าเว็บต้องพิมพ์ข้อความยืนยันให้ตรง', () => {
+    const app = bootstrapApp();
+    const adminToken = app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token;
+    app.ctx.createRequest_(samplePayload());
+
+    assertEqual(app.ctx.apiAdminResetData(adminToken, 'ลบ').ok, false, 'พิมพ์ไม่ตรงต้องไม่ทำงาน');
+    assertEqual(app.ctx.readAll_('Requests').length, 1, 'ข้อมูลต้องยังอยู่');
+
+    app.ctx.saveUser_(adminToken, {
+      email: 'staff2@arts.tu.ac.th', name: 'เจ้าหน้าที่', role: 'staff', password: 'StaffPass123'
+    });
+    const staffToken = app.ctx.login_('staff2@arts.tu.ac.th', 'StaffPass123').token;
+    assertEqual(app.ctx.apiAdminResetData(staffToken, 'ล้างข้อมูลทั้งหมด').ok, false,
+      'เจ้าหน้าที่ทั่วไปต้องล้างข้อมูลไม่ได้');
+    assertEqual(app.ctx.readAll_('Requests').length, 1);
+
+    const ok = app.ctx.apiAdminResetData(adminToken, 'ล้างข้อมูลทั้งหมด');
+    assertEqual(ok.ok, true);
+    assertEqual(app.ctx.readAll_('Requests').length, 0);
+  });
+
+  test('ลบแถวในชีตเองแล้วคำขอหายจากระบบ แต่ทะเบียนไฟล์ยังค้าง', () => {
+    const { app, job } = appWithOneJob();
+    const sheet = app.ctx.sheet_('Requests');
+    sheet.deleteRow(2);
+
+    assertEqual(app.ctx.getRequest_(job.jobId), null, 'ลบแถวแล้วต้องหายจากระบบ');
+    assert(app.ctx.filterBy_('Attachments', 'jobId', job.jobId).length > 0,
+      'แต่ทะเบียนไฟล์ยังค้างอยู่ จึงควรลบผ่านระบบแทน');
+  });
+}
+
+/* ==========================================================================
+   21. ตรวจค่าตั้งค่าก่อนบันทึก
+   ========================================================================== */
+group('21. ตรวจค่าตั้งค่าก่อนบันทึก');
+
+{
+  function adminApp() {
+    const app = bootstrapApp();
+    return { app, token: app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token };
+  }
+
+  test('ค่าตัวเลขนอกช่วงที่ระบบรับได้ต้องถูกปฏิเสธ', () => {
+    const { app, token } = adminApp();
+    const cases = [
+      ['maxFileMB', '0'], ['maxFileMB', '999'],
+      ['maxFiles', '0'], ['maxFiles', '100'],
+      ['revisionLimit', '0'], ['revisionLimit', '50'],
+      ['minLeadDays', '-1'], ['slaFirstDraftDays', '0']
+    ];
+    for (const [key, value] of cases) {
+      const patch = {};
+      patch[key] = value;
+      const res = app.ctx.apiAdminSaveSettings(token, patch);
+      assertEqual(res.ok, false, key + ' = ' + value + ' ต้องถูกปฏิเสธ');
+    }
+    assertEqual(app.ctx.getSetting_('maxFileMB', '10'), '10', 'ค่าเดิมต้องไม่ถูกเปลี่ยน');
+  });
+
+  test('ค่าตัวเลขที่ไม่ใช่ตัวเลขต้องถูกปฏิเสธพร้อมบอกช่วงที่ถูกต้อง', () => {
+    const { app, token } = adminApp();
+    const res = app.ctx.apiAdminSaveSettings(token, { maxFileMB: 'สิบ' });
+    assertEqual(res.ok, false);
+    assert(res.error.indexOf('1') >= 0 && res.error.indexOf('25') >= 0,
+      'ข้อความต้องบอกช่วงที่ใส่ได้ ได้ : ' + res.error);
+  });
+
+  test('ค่าตัวเลขที่อยู่ในช่วงบันทึกได้และเก็บเป็นตัวเลขล้วน', () => {
+    const { app, token } = adminApp();
+    const res = app.ctx.apiAdminSaveSettings(token, {
+      maxFileMB: ' 15 ', maxFiles: '12', revisionLimit: '5', minLeadDays: '0'
+    });
+    assertEqual(res.ok, true);
+    assertEqual(app.ctx.getSetting_('maxFileMB', '10'), '15');
+    assertEqual(app.ctx.getSetting_('maxFiles', '8'), '12');
+    assertEqual(app.ctx.getSetting_('minLeadDays', '7'), '0');
+  });
+
+  test('รายชื่ออีเมลแจ้งเตือนต้องถูกต้องและไม่ซ้ำ', () => {
+    const { app, token } = adminApp();
+    const bad = app.ctx.apiAdminSaveSettings(token, { notifyEmails: 'pr@arts.tu.ac.th, ไม่ใช่อีเมล' });
+    assertEqual(bad.ok, false);
+
+    const empty = app.ctx.apiAdminSaveSettings(token, { notifyEmails: '  ' });
+    assertEqual(empty.ok, false, 'ห้ามเหลือศูนย์รายชื่อ เพราะจะไม่มีใครรู้ว่ามีคำขอเข้ามา');
+
+    const ok = app.ctx.apiAdminSaveSettings(token, {
+      notifyEmails: 'PR@arts.tu.ac.th, pr@arts.tu.ac.th , design@arts.tu.ac.th'
+    });
+    assertEqual(ok.ok, true);
+    assertEqual(app.ctx.getSetting_('notifyEmails', ''), 'pr@arts.tu.ac.th, design@arts.tu.ac.th');
+  });
+
+  test('ชนิดไฟล์ที่อนุญาตต้องเป็นนามสกุลจริงและตัดจุดนำหน้าออกให้', () => {
+    const { app, token } = adminApp();
+    assertEqual(app.ctx.apiAdminSaveSettings(token, { allowedFileTypes: 'pdf, ไฟล์ภาพ' }).ok, false);
+    assertEqual(app.ctx.apiAdminSaveSettings(token, { allowedFileTypes: ' ' }).ok, false);
+
+    assertEqual(app.ctx.apiAdminSaveSettings(token, { allowedFileTypes: '.PDF, jpg, .jpg' }).ok, true);
+    assertEqual(app.ctx.getSetting_('allowedFileTypes', ''), 'pdf,jpg');
+  });
+
+  test('ค่าเปิดปิดต้องเป็น true หรือ false เท่านั้น', () => {
+    const { app, token } = adminApp();
+    assertEqual(app.ctx.apiAdminSaveSettings(token, { publicFormOpen: 'เปิด' }).ok, false);
+    assertEqual(app.ctx.apiAdminSaveSettings(token, { aiEnabled: true }).ok, true);
+    assertEqual(app.ctx.getSetting_('aiEnabled', ''), 'true');
+    assertEqual(app.ctx.apiAdminSaveSettings(token, { publicFormOpen: '0' }).ok, true);
+    assertEqual(app.ctx.getSetting_('publicFormOpen', ''), 'false');
+  });
+
+  test('ค่าที่ไม่รู้จักและค่าที่มีการขึ้นบรรทัดใหม่ต้องไม่หลุดเข้าไป', () => {
+    const { app, token } = adminApp();
+    const res = app.ctx.apiAdminSaveSettings(token, {
+      ไม่มีคีย์นี้: 'x', fromName: 'ฝ่ายสื่อสารองค์กร\nBcc: attacker@example.com'
+    });
+    assertEqual(res.ok, true);
+    assertEqual(res.data.saved, 1, 'ต้องบันทึกเฉพาะคีย์ที่รู้จัก');
+    assert(app.ctx.getSetting_('fromName', '').indexOf('\n') < 0, 'ต้องไม่มีการขึ้นบรรทัดใหม่');
+  });
+
+  test('อีเมลตอบกลับผิดรูปแบบต้องถูกปฏิเสธ แต่เว้นว่างได้', () => {
+    const { app, token } = adminApp();
+    assertEqual(app.ctx.apiAdminSaveSettings(token, { replyTo: 'ไม่ใช่อีเมล' }).ok, false);
+    assertEqual(app.ctx.apiAdminSaveSettings(token, { replyTo: '' }).ok, true);
+    assertEqual(app.ctx.getSettings_().replyTo, '', 'เว้นว่างได้ ระบบจะใช้ค่าเริ่มต้นแทน');
+  });
+
+  test('หัวข้ออีเมลไม่ถูกแทรกบรรทัดใหม่จากชื่อโครงการของผู้ขอ', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload({
+      projectName: 'โครงการทดสอบ\nBcc: attacker@example.com'
+    }));
+    app.ctx.finalizeRequest_(job.jobId);
+    const mails = app.state.outbox;
+    assert(mails.length > 0, 'ต้องมีอีเมลถูกส่ง');
+    for (const mail of mails) {
+      assert(String(mail.subject).indexOf('\n') < 0, 'หัวข้ออีเมลต้องไม่มีการขึ้นบรรทัดใหม่');
+      assert(String(mail.subject).indexOf('\r') < 0, 'หัวข้ออีเมลต้องไม่มีอักขระ CR');
+    }
   });
 }
 
