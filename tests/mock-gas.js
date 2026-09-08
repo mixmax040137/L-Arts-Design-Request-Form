@@ -227,7 +227,10 @@ function createRuntime(options) {
     triggers: [],
     fetches: [],
     fetchHandler: opts.fetchHandler || null,
-    webAppUrl: opts.webAppUrl || 'https://script.google.com/macros/s/TESTDEPLOY/exec'
+    // ส่ง '' มาได้ เพื่อจำลองกรณียังไม่ได้ deploy
+    webAppUrl: opts.webAppUrl === undefined
+      ? 'https://script.google.com/macros/s/TESTDEPLOY/exec'
+      : opts.webAppUrl
   };
 
   const SpreadsheetApp = {

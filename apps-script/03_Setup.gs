@@ -365,12 +365,82 @@ function setAnthropicApiKey(key) {
 
 /** คืน URL ของเว็บแอปแบบไม่ทำให้เกิด error ตอนยังไม่ deploy */
 function safeWebAppUrl_() {
+  var saved = getProp_(PROP.WEBAPP_URL);
+  if (saved) return saved;
   try {
     var url = ScriptApp.getService().getUrl();
     return url || '';
   } catch (err) {
     return '';
   }
+}
+
+/**
+ * จดจำ URL จริงของเว็บแอปไว้ใน Script Properties
+ * เรียกจาก doGet เท่านั้น เพราะเป็นบริบทเดียวที่ ScriptApp คืนค่า /exec ที่ถูกต้องแน่นอน
+ * งานเบื้องหลัง (ทริกเกอร์) เรียกแล้วอาจได้ /dev หรือค่าว่าง ทำให้ลิงก์ในอีเมลใช้ไม่ได้
+ */
+function rememberWebAppUrl_() {
+  try {
+    var url = str_(ScriptApp.getService().getUrl());
+    if (!url || url.indexOf('/exec') < 0) return;
+    if (url !== getProp_(PROP.WEBAPP_URL)) setProp_(PROP.WEBAPP_URL, url);
+  } catch (err) {
+    // ไม่ต้องทำอะไร ใช้ค่าเดิมต่อไป
+  }
+}
+
+/**
+ * แสดงลิงก์และสถานะทั้งหมดของระบบใน Execution log
+ * ใช้เมื่อหา URL ที่ถูกต้องไม่เจอ หรือต้องการตรวจว่าติดตั้งครบหรือยัง
+ */
+function showLinks() {
+  var base = safeWebAppUrl_();
+  var live = '';
+  try { live = str_(ScriptApp.getService().getUrl()); } catch (err) { live = ''; }
+
+  var lines = ['', '=============================================='];
+  lines.push(' ลิงก์ของระบบ ' + APP.NAME);
+  lines.push('==============================================', '');
+
+  if (base) {
+    lines.push('  สำหรับผู้ขอรับบริการ (แจกลิงก์นี้)');
+    lines.push('    ' + base);
+    lines.push('');
+    lines.push('  สำหรับเจ้าหน้าที่');
+    lines.push('    ' + base + '?page=login');
+  } else {
+    lines.push('  ยังไม่พบ URL ของเว็บแอป');
+    lines.push('  แปลว่ายังไม่เคยมีใครเปิดเว็บแอปผ่านลิงก์ /exec เลย');
+    lines.push('  ให้ไปที่ Deploy > Manage deployments แล้วคัดลอกช่อง "Web app" > URL');
+    lines.push('  (อย่าคัดลอกช่อง "Library" เพราะเปิดเป็นหน้าเว็บไม่ได้)');
+  }
+
+  if (live && live.indexOf('/dev') > 0) {
+    lines.push('');
+    lines.push('  หมายเหตุ: ตอนนี้รันจากตัวแก้ไข ระบบจึงเห็นเป็น URL ทดสอบ');
+    lines.push('    ' + live);
+    lines.push('  ห้ามแจก URL ที่ลงท้าย /dev ให้ผู้ขอรับบริการ เพราะคนอื่นเปิดไม่ได้');
+  }
+
+  var ssId = getProp_(PROP.SPREADSHEET_ID);
+  var folderId = getProp_(PROP.ROOT_FOLDER_ID);
+  lines.push('');
+  lines.push('  ฐานข้อมูล : ' + (ssId ? 'https://docs.google.com/spreadsheets/d/' + ssId + '/edit' : 'ยังไม่ได้ติดตั้ง'));
+  lines.push('  โฟลเดอร์  : ' + (folderId ? 'https://drive.google.com/drive/folders/' + folderId : 'ยังไม่ได้ติดตั้ง'));
+  lines.push('');
+
+  try {
+    lines.push('  บัญชีเจ้าหน้าที่ในระบบ : ' + readAll_(SHEET.USERS).length + ' บัญชี');
+    lines.push('  คำขอทั้งหมด           : ' + Math.max(0, sheet_(SHEET.REQUESTS).getLastRow() - 1) + ' รายการ');
+    lines.push('  อีเมลที่รับแจ้งเตือน    : ' + (staffRecipients_().join(', ') || 'ยังไม่มี'));
+  } catch (err) {
+    lines.push('  อ่านข้อมูลไม่สำเร็จ: ' + err.message);
+  }
+  lines.push('');
+
+  Logger.log(lines.join('\n'));
+  return { webAppUrl: base, liveUrl: live };
 }
 
 /** แสดงสถานะการติดตั้งของระบบ (ใช้ตรวจสอบภายหลัง) */

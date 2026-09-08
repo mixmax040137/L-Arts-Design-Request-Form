@@ -1688,6 +1688,74 @@ group('18. การแจ้งเตือนผู้ออกแบบ (ผ�
 }
 
 /* ==========================================================================
+   19. URL ของเว็บแอปที่ใช้ในลิงก์อีเมล
+   ========================================================================== */
+group('19. URL ของเว็บแอปในลิงก์อีเมล');
+
+{
+  const EXEC = 'https://script.google.com/macros/s/DEPLOYID/exec';
+  const DEV = 'https://script.google.com/macros/s/DEPLOYID/dev';
+
+  test('จดจำ URL จริงไว้ตอนมีคนเปิดเว็บแอป', () => {
+    const app = loadApp({ webAppUrl: EXEC });
+    assertEqual(app.state.props.WEBAPP_URL, undefined, 'เริ่มต้นต้องยังไม่มี');
+    app.ctx.doGet({ parameter: {} });
+    assertEqual(app.state.props.WEBAPP_URL, EXEC);
+  });
+
+  test('ไม่จดจำ URL ทดสอบที่ลงท้าย /dev', () => {
+    const app = loadApp({ webAppUrl: DEV });
+    app.ctx.doGet({ parameter: {} });
+    assertEqual(app.state.props.WEBAPP_URL, undefined, 'ต้องไม่เก็บ URL แบบ /dev');
+  });
+
+  test('ลิงก์ติดตามในอีเมลใช้ /exec เสมอแม้ส่งจากงานเบื้องหลัง', () => {
+    const app = loadApp({ webAppUrl: EXEC });
+    app.ctx.doGet({ parameter: {} });
+    app.ctx.createAdmin('pr@arts.tu.ac.th', 'ผู้ดูแล', 'SuperSecret123');
+
+    const created = app.ctx.createRequest_(samplePayload());
+    const row = app.ctx.getRequest_(created.jobId);
+    app.ctx.update_('Requests', row._row, {
+      createdAt: '2000-01-01 00:00:00', updatedAt: '2000-01-01 00:00:00'
+    });
+
+    // จำลองบริบททริกเกอร์: ScriptApp คืนค่า /dev ซึ่งผู้ขอรับบริการเปิดไม่ได้
+    app.state.webAppUrl = DEV;
+    app.state.outbox.length = 0;
+    app.ctx.workerTick();
+
+    const mail = app.state.outbox.find(function (m) {
+      return String(m.to).indexOf('thitiwut@arts.tu.ac.th') >= 0;
+    });
+    assert(!!mail, 'ต้องส่งอีเมลยืนยันให้ผู้ขอ');
+    assert(mail.htmlBody.indexOf('/exec?page=track') >= 0, 'ลิงก์ต้องเป็น /exec');
+    assert(mail.htmlBody.indexOf('/dev?page=track') < 0, 'ต้องไม่มีลิงก์ /dev หลุดไปหาผู้ขอ');
+  });
+
+  test('showLinks รายงานลิงก์และสถานะระบบได้', () => {
+    const app = loadApp({ webAppUrl: EXEC });
+    app.ctx.doGet({ parameter: {} });
+    app.ctx.createAdmin('pr@arts.tu.ac.th', 'ผู้ดูแล', 'SuperSecret123');
+    const res = app.ctx.showLinks();
+    assertEqual(res.webAppUrl, EXEC);
+    const log = app.state.logs.join('\n');
+    assert(log.indexOf(EXEC) >= 0, 'ต้องแสดงลิงก์ผู้ขอรับบริการ');
+    assert(log.indexOf('?page=login') >= 0, 'ต้องแสดงลิงก์เจ้าหน้าที่');
+    assert(log.indexOf('docs.google.com/spreadsheets') >= 0, 'ต้องแสดงลิงก์ฐานข้อมูล');
+  });
+
+  test('showLinks เตือนเมื่อยังไม่เคยมีใครเปิดเว็บแอป', () => {
+    const app = loadApp({ webAppUrl: '' });
+    app.ctx.setupSystem();
+    app.ctx.showLinks();
+    const log = app.state.logs.join('\n');
+    assert(log.indexOf('ยังไม่พบ URL ของเว็บแอป') >= 0, 'ต้องบอกว่าหาไม่เจอ');
+    assert(log.indexOf('Library') >= 0, 'ต้องเตือนเรื่องคัดลอกช่อง Library ผิด');
+  });
+}
+
+/* ==========================================================================
    สรุปผล
    ========================================================================== */
 console.log('\n' + '='.repeat(62));

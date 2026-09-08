@@ -33,6 +33,7 @@ function doGet(e) {
   var installError = '';
   try {
     ensureInstalled_();
+    rememberWebAppUrl_();
   } catch (err) {
     installError = err.message || String(err);
     console.error('ติดตั้งระบบอัตโนมัติไม่สำเร็จ: ' + installError);
