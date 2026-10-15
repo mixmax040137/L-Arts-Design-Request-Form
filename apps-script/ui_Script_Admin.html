@@ -202,10 +202,24 @@ var Admin = (function () {
       '<span style="color:var(--primary)">' + App.esc(r.jobId) + '</span> ' +
       '<span style="font-weight:400;font-size:.95rem">' + App.esc(r.projectName) + '</span>';
 
-    var statusButtons = r.nextStatuses.map(function (s) {
-      return '<button class="btn btn-sm btn-ghost" onclick="Admin.changeStatus(\'' + s.key + '\')">' +
-        '<i class="bi bi-arrow-right-circle me-1"></i>' + App.esc(s.label) + '</button>';
-    }).join('');
+    // แสดงครบทุกสถานะ ขอบทึบคือขั้นถัดไปตามปกติ ขอบประคือข้ามขั้นหรือย้อนขั้น
+    var statusPicker =
+      '<div class="status-picker">' +
+        '<div class="sp-head"><strong>เปลี่ยนสถานะ</strong>' +
+          '<span><span class="sp-key next"></span>ขั้นถัดไปตามปกติ</span>' +
+          '<span><span class="sp-key skip"></span>ข้ามขั้น / ย้อนขั้น</span></div>' +
+        '<div class="sp-grid">' +
+        (r.statusOptions || []).map(function (s) {
+          if (s.kind === 'current') {
+            return '<span class="sp-btn current" style="--c:' + s.color + '" title="สถานะปัจจุบัน">' +
+              '<i class="bi bi-check-circle-fill"></i>' + App.esc(s.label) + '</span>';
+          }
+          return '<button type="button" class="sp-btn ' + s.kind + '" style="--c:' + s.color + '" ' +
+            'onclick="Admin.changeStatus(\'' + s.key + '\')">' +
+            '<i class="bi ' + s.icon + '"></i>' + App.esc(s.label) + '</button>';
+        }).join('') +
+        '</div>' +
+      '</div>';
 
     var missing = r.briefMissing ? r.briefMissing.split(' | ').filter(function (x) { return !!x; }) : [];
     var briefBox = r.briefStatus === 'DONE'
@@ -253,8 +267,13 @@ var Admin = (function () {
         }).join('');
 
     var timelineHtml = data.timeline.slice().reverse().map(function (t) {
+      var text = t.action === 'STATUS' && t.toLabel
+        ? '<div>เปลี่ยนสถานะ ' + (t.fromLabel ? App.esc(t.fromLabel) + ' &rarr; ' : '') +
+          '<strong>' + App.esc(t.toLabel) + '</strong></div>' +
+          (t.detail ? '<div class="tl-note">' + App.nl2br(t.detail) + '</div>' : '')
+        : '<div>' + App.esc(t.detail || t.action) + '</div>';
       return '<div class="timeline-item"><div class="tl-dot"><i class="bi bi-dot"></i></div>' +
-        '<div class="tl-body"><div>' + App.esc(t.detail || t.action) + '</div>' +
+        '<div class="tl-body">' + text +
         '<div class="tl-time">' + App.thaiDate(t.at, true) + ' &middot; ' +
         App.esc(t.actor || 'ระบบ') + '</div></div></div>';
     }).join('');
@@ -272,7 +291,8 @@ var Admin = (function () {
             (r.assignedTo ? '<span class="badge-soft"><i class="bi bi-person-check me-1"></i>' +
               App.esc(r.assignedTo) + '</span>' : '') +
           '</div>' +
-          '<div class="d-flex flex-wrap gap-2 mb-3">' + statusButtons +
+          statusPicker +
+          '<div class="d-flex flex-wrap gap-2 mb-3">' +
             '<button class="btn btn-sm btn-ghost" onclick="Admin.assign()">' +
               '<i class="bi bi-person-plus me-1"></i>มอบหมาย</button>' +
             '<button class="btn btn-sm btn-ghost" onclick="Admin.addNote()">' +
@@ -420,23 +440,57 @@ var Admin = (function () {
         field: { label: 'ข้อความถึงผู้ขอรับบริการ (ถ้ามี)', type: 'textarea', rows: 3 }
       }
     };
+    var r = currentJob.request;
+    var target = (r.statusOptions || []).filter(function (s) { return s.key === toStatus; })[0] ||
+      { key: toStatus, label: toStatus, kind: 'next' };
     var c = config[toStatus] || {
-      title: 'เปลี่ยนสถานะงาน',
-      field: { label: 'หมายเหตุ (ถ้ามี)', type: 'textarea', rows: 3 }
+      title: 'เปลี่ยนสถานะเป็น "' + target.label + '"',
+      field: { label: 'หมายเหตุถึงผู้ขอรับบริการ (ถ้ามี)', type: 'textarea', rows: 3 }
     };
 
+    var notices = '';
+    if (target.kind === 'skip') {
+      notices += '<div class="notice-warn mb-3"><i class="bi bi-skip-forward-fill me-1"></i>' +
+        '<strong>ข้ามขั้นตอนปกติ</strong> จาก "' + App.esc(r.statusLabel) + '" ไปเป็น "' +
+        App.esc(target.label) + '" ใช้ในกรณีที่ตกลงกับผู้ขอรับบริการโดยตรงแล้ว ' +
+        'ระบบจะบันทึกการเปลี่ยนนี้ไว้ในประวัติการดำเนินงาน</div>';
+    }
+    if ((r.status === 'DELIVERED' || r.status === 'CANCELLED') && toStatus !== r.status) {
+      notices += '<div class="notice-warn mb-3"><i class="bi bi-arrow-counterclockwise me-1"></i>' +
+        '<strong>เปิดงานที่ปิดแล้วอีกครั้ง</strong> ' +
+        (r.status === 'DELIVERED'
+          ? 'วันที่ส่งมอบและระยะเวลาดำเนินการเดิมจะถูกล้าง แล้วคำนวณใหม่เมื่อส่งมอบอีกครั้ง'
+          : 'เหตุผลการยกเลิกเดิมจะถูกล้าง') + '</div>';
+    }
+    if (toStatus === 'DELIVERED') {
+      var finals = (currentJob.attachments || []).filter(function (f) { return f.kind === 'final'; });
+      if (finals.length === 0) {
+        notices += '<div class="notice-warn mb-3"><i class="bi bi-exclamation-triangle-fill me-1"></i>' +
+          'ยังไม่มีไฟล์ส่งมอบในระบบ อีเมลแจ้งส่งมอบจะไม่มีลิงก์ไฟล์ ' +
+          'ถ้าส่งไฟล์ให้ผู้ขอทางอื่นไปแล้วก็ยืนยันได้เลย</div>';
+      }
+    }
+
     App.prompt({
-      title: c.title, html: c.html || '', field: c.field, okLabel: 'ยืนยัน'
-    }).then(function (value) {
-      if (value === null) return;
-      var options = { detail: typeof value === 'string' ? value : '' };
+      title: c.title, html: notices + (c.html || ''), field: c.field, okLabel: 'ยืนยัน',
+      checkbox: {
+        label: 'ส่งอีเมลแจ้งผู้ขอรับบริการ (' + r.requesterEmail + ')', checked: true,
+        hint: 'ถ้าแจ้งผู้ขอโดยตรงไปแล้ว เอาเครื่องหมายออกได้ ระบบจะเปลี่ยนสถานะโดยไม่ส่งอีเมล'
+      }
+    }).then(function (result) {
+      if (result === null) return;
+      var value = typeof result.value === 'string' ? result.value : '';
+      var notify = result.checked;
+      var options = { detail: value, notify: notify };
       if (toStatus === 'REVIEW') { options.draftUrl = value; options.detail = ''; }
       if (toStatus === 'CANCELLED') { options.cancelReason = value; }
       App.loading(true, 'กำลังบันทึก...');
-      return App.api('apiAdminChangeStatus', [token, currentJob.request.jobId, toStatus, options])
+      return App.api('apiAdminChangeStatus', [token, r.jobId, toStatus, options])
         .then(function () {
           App.loading(false);
-          App.toast('เปลี่ยนสถานะเรียบร้อย และส่งอีเมลแจ้งผู้ขอรับบริการแล้ว', 'ok');
+          App.toast(notify
+            ? 'เปลี่ยนสถานะเรียบร้อย และส่งอีเมลแจ้งผู้ขอรับบริการแล้ว'
+            : 'เปลี่ยนสถานะเรียบร้อย (ไม่ได้ส่งอีเมลแจ้งผู้ขอ)', 'ok');
           reloadJob();
         });
     }).catch(handleAuthError);

@@ -220,6 +220,28 @@
   .bar-row .fill { height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--primary), var(--accent)); }
   .bar-row .val { width: 34px; text-align: right; font-weight: 500; }
 
+  /* ----------------------------------------------------- Status picker */
+  .status-picker { border: 1px solid var(--border); border-radius: 14px; padding: .75rem .85rem .85rem; margin-bottom: .9rem; background: #fcfcfd; }
+  .status-picker .sp-head { display: flex; flex-wrap: wrap; align-items: center; gap: .2rem .9rem; font-size: .74rem; color: var(--text-light); margin-bottom: .6rem; }
+  .status-picker .sp-head strong { color: var(--text-dark); font-size: .83rem; font-weight: 600; margin-right: .2rem; }
+  .sp-key { display: inline-block; width: 18px; height: 10px; border-radius: 6px; border: 1.5px solid var(--text-light); margin-right: .3rem; vertical-align: -1px; }
+  .sp-key.skip { border-style: dashed; border-color: #94a3b8; }
+  .sp-grid { display: flex; flex-wrap: wrap; gap: .45rem; }
+  .sp-btn {
+    --c: var(--text-light);
+    display: inline-flex; align-items: center; gap: .4rem; border-radius: 30px; padding: .38rem .9rem;
+    font-size: .8rem; font-weight: 500; line-height: 1.3; background: #fff; color: var(--text-light);
+    border: 1.5px solid var(--border); transition: var(--transition);
+  }
+  .sp-btn i { color: var(--c); font-size: .9rem; }
+  button.sp-btn:hover { border-color: var(--c); color: var(--c); background: color-mix(in srgb, var(--c) 8%, #fff); }
+  .sp-btn.next { border-color: var(--c); color: var(--c); font-weight: 600; }
+  .sp-btn.skip { border-style: dashed; border-color: #cbd5e1; }
+  .sp-btn.current { background: var(--c); border-color: var(--c); color: #fff; font-weight: 600; cursor: default; }
+  .sp-btn.current i { color: #fff; }
+  .notice-warn { background: #fffbeb; border: 1px solid #fde68a; border-radius: 12px; padding: .7rem .9rem; font-size: .83rem; color: #92400e; line-height: 1.7; }
+  .tl-note { font-size: .82rem; color: #475569; margin-top: .15rem; }
+
   /* -------------------------------------------------------- Misc parts */
   .rules-box {
     background: #f8fafc; border-left: 4px solid var(--accent); border-radius: 12px;

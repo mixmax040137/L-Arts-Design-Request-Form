@@ -150,7 +150,7 @@ var Track = (function () {
         view.timeline.slice().reverse().map(function (t) {
           return '<div class="timeline-item">' +
             '<div class="tl-dot"><i class="bi ' + timelineIcon(t.action) + '"></i></div>' +
-            '<div class="tl-body"><div>' + App.esc(t.detail || actionLabel(t.action)) + '</div>' +
+            '<div class="tl-body">' + timelineText(t) +
             '<div class="tl-time">' + App.thaiDate(t.at, true) + '</div></div></div>';
         }).join('') +
       '</div>';
@@ -206,6 +206,14 @@ var Track = (function () {
       UPLOAD: 'อัปโหลดไฟล์', ASSIGN: 'มอบหมายผู้รับผิดชอบ'
     };
     return map[action] || action;
+  }
+
+  function timelineText(t) {
+    if (t.action === 'STATUS' && t.toLabel) {
+      return '<div>สถานะเปลี่ยนเป็น <strong>' + App.esc(t.toLabel) + '</strong></div>' +
+        (t.detail ? '<div class="tl-note">' + App.nl2br(t.detail) + '</div>' : '');
+    }
+    return '<div>' + App.esc(t.detail || actionLabel(t.action)) + '</div>';
   }
 
   function timelineIcon(action) {

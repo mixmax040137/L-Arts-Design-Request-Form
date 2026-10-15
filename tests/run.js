@@ -543,9 +543,10 @@ group('7. การเปลี่ยนสถานะงาน');
   app.ctx.finalizeRequest_(created.jobId);
   const jobId = created.jobId;
 
-  test('ข้ามขั้นตอนไม่ได้ (รับคำขอ ไปเป็น ส่งมอบแล้ว)', () => {
-    assertThrows(() => app.ctx.changeStatus_(jobId, 'DELIVERED', 'เจ้าหน้าที่', {}),
-      'ไม่สามารถเปลี่ยนสถานะ');
+  test('สถานะปลายทางที่ไม่มีอยู่จริงต้องถูกปฏิเสธ', () => {
+    assertThrows(() => app.ctx.changeStatus_(jobId, 'DONE', 'เจ้าหน้าที่', {}),
+      'สถานะปลายทางไม่ถูกต้อง');
+    assertEqual(app.ctx.getRequest_(jobId).status, 'NEW', 'สถานะต้องไม่เปลี่ยน');
   });
 
   test('เปลี่ยนเป็นอยู่ระหว่างออกแบบและบันทึกเวลาเริ่มงาน', () => {
@@ -586,9 +587,12 @@ group('7. การเปลี่ยนสถานะงาน');
     assertEqual(Number(updated.leadTimeDays), 0, 'ยื่นและส่งมอบวันเดียวกันคือ 0 วัน');
   });
 
-  test('งานที่ส่งมอบแล้วเปลี่ยนสถานะต่อไม่ได้', () => {
-    assertThrows(() => app.ctx.changeStatus_(jobId, 'DESIGNING', 'เจ้าหน้าที่', {}),
-      'ไม่สามารถเปลี่ยนสถานะ');
+  test('งานที่ส่งมอบแล้วเปิดกลับมาแก้ไขได้ และล้างวันที่ส่งมอบเดิม', () => {
+    const reopened = app.ctx.changeStatus_(jobId, 'REVISING', 'เจ้าหน้าที่', {});
+    assertEqual(reopened.status, 'REVISING');
+    assertEqual(app.ctx.str_(reopened.deliveredAt), '', 'ต้องล้างวันที่ส่งมอบเดิม');
+    assertEqual(app.ctx.str_(reopened.leadTimeDays), '', 'ต้องล้างระยะเวลาดำเนินการเดิม');
+    assertEqual(app.ctx.str_(reopened.closedAt), '', 'ต้องล้างวันที่ปิดงาน');
   });
 
   test('ยกเลิกคำขอต้องระบุเหตุผล', () => {
@@ -1199,7 +1203,8 @@ group('13. คิวงาน สถิติ และคลังผลงา�
     assertEqual(d.revisions.length, 1);
     assert(d.timeline.length >= 5, 'ต้องมีประวัติการทำงาน');
     assert(!!d.request.trackUrl, 'ต้องมีลิงก์ติดตามให้เจ้าหน้าที่ส่งต่อได้');
-    assertEqual(d.request.nextStatuses.length, 0, 'งานที่ส่งมอบแล้วไม่มีสถานะถัดไป');
+    assertEqual(d.request.nextStatuses.length, 0, 'งานที่ส่งมอบแล้วไม่มีขั้นถัดไปตามปกติ');
+    assertEqual(d.request.statusOptions.length, 7, 'แต่ต้องมีตัวเลือกครบทุกสถานะให้เปิดงานใหม่ได้');
   });
 }
 
@@ -2007,6 +2012,143 @@ group('21. ตรวจค่าตั้งค่าก่อนบันทึ
       assert(String(mail.subject).indexOf('\n') < 0, 'หัวข้ออีเมลต้องไม่มีการขึ้นบรรทัดใหม่');
       assert(String(mail.subject).indexOf('\r') < 0, 'หัวข้ออีเมลต้องไม่มีอักขระ CR');
     }
+  });
+}
+
+/* ==========================================================================
+   22. เปลี่ยนสถานะได้อิสระ (ข้ามขั้น ย้อนขั้น เปิดงานใหม่)
+   ========================================================================== */
+group('22. เปลี่ยนสถานะได้อิสระ (ข้ามขั้น ย้อนขั้น เปิดงานใหม่)');
+
+{
+  function freshJob() {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload());
+    app.ctx.finalizeRequest_(job.jobId);
+    return { app, jobId: job.jobId };
+  }
+  const requester = 'thitiwut@arts.tu.ac.th';
+  const mailsTo = (app) => app.state.outbox.filter((m) => m.to === requester).length;
+
+  test('ข้ามจากรับคำขอไปส่งมอบได้ทันที พร้อมบันทึกวันที่ครบ', () => {
+    const { app, jobId } = freshJob();
+    const done = app.ctx.changeStatus_(jobId, 'DELIVERED', 'เจ้าหน้าที่', {});
+    assertEqual(done.status, 'DELIVERED');
+    assert(!!app.ctx.str_(done.startedAt), 'ข้ามมาส่งมอบเลยต้องถือว่าเริ่มงานแล้ว');
+    assert(!!app.ctx.str_(done.deliveredAt), 'ต้องบันทึกวันที่ส่งมอบ');
+    assertEqual(Number(done.leadTimeDays), 0);
+    const log = app.ctx.getTimeline_(jobId).filter((t) => t.action === 'STATUS');
+    assertEqual(log.length, 1);
+    assertEqual(log[0].fromStatus, 'NEW');
+    assertEqual(log[0].toStatus, 'DELIVERED');
+  });
+
+  test('ข้ามไปรอตรวจร่างยังต้องมีลิงก์ร่าง เพราะผู้ขอต้องเปิดดูได้', () => {
+    const { app, jobId } = freshJob();
+    assertThrows(() => app.ctx.changeStatus_(jobId, 'REVIEW', 'เจ้าหน้าที่', {}), 'ลิงก์ร่างชิ้นงาน');
+    const updated = app.ctx.changeStatus_(jobId, 'REVIEW', 'เจ้าหน้าที่',
+      { draftUrl: 'https://canva.com/design/xyz' });
+    assertEqual(updated.status, 'REVIEW');
+    assert(!!app.ctx.str_(updated.startedAt), 'ต้องบันทึกเวลาเริ่มงาน');
+    assert(!!app.ctx.str_(updated.firstDraftAt), 'ต้องบันทึกเวลาร่างแรก');
+  });
+
+  test('ย้อนขั้นได้ เช่น รอตรวจร่าง กลับไปรับคำขอ', () => {
+    const { app, jobId } = freshJob();
+    app.ctx.changeStatus_(jobId, 'REVIEW', 'เจ้าหน้าที่', { draftUrl: 'https://canva.com/d/1' });
+    const back = app.ctx.changeStatus_(jobId, 'NEW', 'เจ้าหน้าที่', { detail: 'รอผู้ขอยืนยันข้อความอีกครั้ง' });
+    assertEqual(back.status, 'NEW');
+    assertEqual(back.draftUrl, 'https://canva.com/d/1', 'ลิงก์ร่างเดิมต้องยังอยู่');
+  });
+
+  test('เลือกไม่ส่งอีเมลได้เมื่อแจ้งผู้ขอโดยตรงแล้ว แต่ยังบันทึกประวัติ', () => {
+    const { app, jobId } = freshJob();
+    const before = mailsTo(app);
+    app.ctx.changeStatus_(jobId, 'DELIVERED', 'เจ้าหน้าที่', { notify: false });
+    assertEqual(mailsTo(app), before, 'ต้องไม่ส่งอีเมลถึงผู้ขอ');
+    assert(app.ctx.getTimeline_(jobId).some((t) => t.action === 'STATUS' && t.toStatus === 'DELIVERED'),
+      'ต้องบันทึกในประวัติแม้ไม่ส่งอีเมล');
+  });
+
+  test('เปิดงานที่ส่งมอบแล้วอีกครั้ง แดชบอร์ดและคลังผลงานต้องไม่นับเป็นงานส่งมอบ', () => {
+    const { app, jobId } = freshJob();
+    app.ctx.changeStatus_(jobId, 'DELIVERED', 'เจ้าหน้าที่', {});
+    assertEqual(app.ctx.getStats_({}).totals.delivered, 1);
+    assertEqual(app.ctx.listAssetLibrary_({}).length, 1);
+
+    app.ctx.changeStatus_(jobId, 'REVISING', 'เจ้าหน้าที่', { detail: 'ผู้ขอโทรมาขอแก้วันที่' });
+    assertEqual(app.ctx.getStats_({}).totals.delivered, 0, 'ต้องไม่นับเป็นส่งมอบแล้ว');
+    assertEqual(app.ctx.getStats_({}).totals.active, 1, 'ต้องกลับมานับเป็นงานที่กำลังทำ');
+    assertEqual(app.ctx.listAssetLibrary_({}).length, 0, 'ต้องออกจากคลังผลงานชั่วคราว');
+
+    const again = app.ctx.changeStatus_(jobId, 'DELIVERED', 'เจ้าหน้าที่', {});
+    assert(!!app.ctx.str_(again.deliveredAt), 'ส่งมอบรอบใหม่ต้องบันทึกวันที่ใหม่');
+    assertEqual(app.ctx.getStats_({}).totals.delivered, 1);
+  });
+
+  test('ยกเลิกงานที่ส่งมอบแล้วต้องล้างวันที่ส่งมอบและยังต้องระบุเหตุผล', () => {
+    const { app, jobId } = freshJob();
+    app.ctx.changeStatus_(jobId, 'DELIVERED', 'เจ้าหน้าที่', {});
+    assertThrows(() => app.ctx.changeStatus_(jobId, 'CANCELLED', 'เจ้าหน้าที่', {}), 'เหตุผล');
+    const c = app.ctx.changeStatus_(jobId, 'CANCELLED', 'เจ้าหน้าที่', { cancelReason: 'โครงการถูกยกเลิก' });
+    assertEqual(c.status, 'CANCELLED');
+    assertEqual(app.ctx.str_(c.deliveredAt), '', 'งานยกเลิกต้องไม่มีวันที่ส่งมอบ');
+    assertEqual(app.ctx.str_(c.leadTimeDays), '');
+    assert(!!app.ctx.str_(c.closedAt), 'ต้องบันทึกวันที่ปิดงาน');
+    assertEqual(app.ctx.getStats_({}).totals.cancelled, 1);
+  });
+
+  test('เปิดงานที่ยกเลิกแล้วอีกครั้งต้องล้างเหตุผลการยกเลิก', () => {
+    const { app, jobId } = freshJob();
+    app.ctx.changeStatus_(jobId, 'CANCELLED', 'เจ้าหน้าที่', { cancelReason: 'กดผิด' });
+    const back = app.ctx.changeStatus_(jobId, 'DESIGNING', 'เจ้าหน้าที่', {});
+    assertEqual(back.status, 'DESIGNING');
+    assertEqual(app.ctx.str_(back.cancelReason), '', 'ต้องล้างเหตุผลการยกเลิก');
+    assertEqual(app.ctx.str_(back.closedAt), '', 'ต้องล้างวันที่ปิดงาน');
+    assertEqual(app.ctx.getPublicView_(jobId, requester, '').cancelReason, '',
+      'หน้าติดตามของผู้ขอต้องไม่แสดงเหตุผลการยกเลิกเดิม');
+  });
+
+  test('หน้าจัดการงานได้ตัวเลือกครบทุกสถานะ แยกขั้นถัดไปกับการข้ามขั้น', () => {
+    const { app, jobId } = freshJob();
+    const token = app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token;
+    const opts = app.ctx.apiAdminGet(token, jobId).data.request.statusOptions;
+    assertEqual(opts.map((o) => o.key).join(','),
+      'NEW,DESIGNING,REVIEW,REVISING,DELIVERED,INFO_NEEDED,CANCELLED', 'ต้องเรียงตามขั้นตอน');
+    assertEqual(opts.filter((o) => o.kind === 'current').map((o) => o.key).join(), 'NEW');
+    assertEqual(opts.filter((o) => o.kind === 'next').map((o) => o.key).sort().join(),
+      ['DESIGNING', 'INFO_NEEDED', 'CANCELLED'].sort().join(), 'ขั้นถัดไปต้องตรงกับขั้นตอนปกติ');
+    assertEqual(opts.filter((o) => o.kind === 'skip').map((o) => o.key).sort().join(),
+      ['REVIEW', 'REVISING', 'DELIVERED'].sort().join());
+    for (const o of opts) assert(!!o.label && !!o.color && !!o.icon, 'ทุกตัวเลือกต้องมีป้าย สี และไอคอน');
+  });
+
+  test('เจ้าหน้าที่ทั่วไปข้ามขั้นได้ แต่คนที่ไม่ได้เข้าสู่ระบบทำไม่ได้', () => {
+    const { app, jobId } = freshJob();
+    const adminToken = app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token;
+    app.ctx.saveUser_(adminToken, {
+      email: 'designer@arts.tu.ac.th', name: 'นักออกแบบ', role: 'staff', password: 'StaffPass123'
+    });
+    const staffToken = app.ctx.login_('designer@arts.tu.ac.th', 'StaffPass123').token;
+
+    assertEqual(app.ctx.apiAdminChangeStatus('', jobId, 'DELIVERED', {}).ok, false);
+    assertEqual(app.ctx.apiAdminChangeStatus('ปลอม', jobId, 'DELIVERED', {}).ok, false);
+    assertEqual(app.ctx.getRequest_(jobId).status, 'NEW');
+
+    const res = app.ctx.apiAdminChangeStatus(staffToken, jobId, 'DELIVERED', { notify: false });
+    assertEqual(res.ok, true);
+    assertEqual(app.ctx.getRequest_(jobId).status, 'DELIVERED');
+  });
+
+  test('ประวัติการเปลี่ยนสถานะแสดงชื่อสถานะภาษาไทย ไม่ใช่รหัส STATUS', () => {
+    const { app, jobId } = freshJob();
+    app.ctx.changeStatus_(jobId, 'DELIVERED', 'เจ้าหน้าที่', { notify: false });
+    const token = app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token;
+    const row = app.ctx.apiAdminGet(token, jobId).data.timeline.filter((t) => t.action === 'STATUS')[0];
+    assertEqual(row.fromLabel, 'รับคำขอ');
+    assertEqual(row.toLabel, 'ส่งมอบแล้ว');
+    const pub = app.ctx.getPublicView_(jobId, requester, '').timeline.filter((t) => t.action === 'STATUS')[0];
+    assertEqual(pub.toLabel, 'ส่งมอบแล้ว');
   });
 }
 

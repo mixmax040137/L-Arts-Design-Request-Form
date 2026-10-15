@@ -124,6 +124,15 @@ var App = (function () {
         }
         if (o.field.hint) body += '<div class="form-text">' + esc(o.field.hint) + '</div>';
       }
+      // ช่องติ๊กเสริม เมื่อส่งมา ผลลัพธ์จะเป็น { value, checked } แทนค่าข้อความอย่างเดียว
+      if (o.checkbox) {
+        body += '<div class="form-check mt-3">' +
+          '<input class="form-check-input" type="checkbox" id="gm-check"' +
+          (o.checkbox.checked ? ' checked' : '') + '>' +
+          '<label class="form-check-label" for="gm-check">' + esc(o.checkbox.label || '') + '</label>' +
+          (o.checkbox.hint ? '<div class="form-text">' + esc(o.checkbox.hint) + '</div>' : '') +
+          '</div>';
+      }
       document.getElementById('gm-body').innerHTML = body;
 
       var okBtn = document.getElementById('gm-ok');
@@ -144,6 +153,10 @@ var App = (function () {
             input.classList.add('is-invalid');
             return;
           }
+        }
+        if (o.checkbox) {
+          var check = document.getElementById('gm-check');
+          value = { value: value, checked: !!(check && check.checked) };
         }
         settled = true;
         modal.hide();

@@ -59,7 +59,11 @@ var STATUS = {
 /** ลำดับสถานะใน stepper */
 var STATUS_FLOW = ['NEW', 'DESIGNING', 'REVIEW', 'REVISING', 'DELIVERED'];
 
-/** การเปลี่ยนสถานะที่อนุญาต (from -> [to]) */
+/**
+ * ขั้นถัดไปตามขั้นตอนปกติ (from -> [to]) ใช้แสดงเป็นปุ่มแนะนำในหน้าจัดการงาน
+ * เจ้าหน้าที่เปลี่ยนไปสถานะอื่นนอกรายการนี้ได้เสมอ (ข้ามขั้น ย้อนขั้น หรือเปิดงานที่ปิดแล้วอีกครั้ง)
+ * เพราะบางครั้งคุยกับผู้ขอโดยตรงและแก้ไขเสร็จทันทีโดยไม่ผ่านระบบ
+ */
 var STATUS_TRANSITIONS = {
   NEW:         ['DESIGNING', 'INFO_NEEDED', 'CANCELLED'],
   INFO_NEEDED: ['NEW', 'DESIGNING', 'CANCELLED'],

@@ -224,6 +224,20 @@ function apiAdminList(token, filter) {
   });
 }
 
+/**
+ * ตัวเลือกสถานะทั้งหมดสำหรับหน้าจัดการงาน เรียงตามขั้นตอน
+ * kind: current = สถานะปัจจุบัน, next = ขั้นถัดไปตามปกติ, skip = ข้ามขั้นหรือย้อนขั้น
+ */
+function statusOptions_(current) {
+  var cur = str_(current).toUpperCase();
+  var order = STATUS_FLOW.concat(['INFO_NEEDED', 'CANCELLED']);
+  return order.map(function (k) {
+    var s = STATUS[k];
+    var kind = k === cur ? 'current' : (isNormalTransition_(cur, k) ? 'next' : 'skip');
+    return { key: s.key, label: s.label, color: s.color, icon: s.icon, kind: kind };
+  });
+}
+
 function apiAdminGet(token, jobId) {
   return respond_(function () {
     requireAuth_(token);
@@ -243,6 +257,7 @@ function apiAdminGet(token, jobId) {
         nextStatuses: (STATUS_TRANSITIONS[info.key] || []).map(function (k) {
           return { key: k, label: STATUS[k].label, color: STATUS[k].color };
         }),
+        statusOptions: statusOptions_(info.key),
         priority: p.key,
         priorityLabel: p.label,
         priorityColor: p.color,
@@ -293,7 +308,9 @@ function apiAdminGet(token, jobId) {
       timeline: full.timeline.map(function (t) {
         return {
           at: str_(t.at), actor: str_(t.actor), action: str_(t.action),
-          fromStatus: str_(t.fromStatus), toStatus: str_(t.toStatus), detail: str_(t.detail)
+          fromStatus: str_(t.fromStatus), toStatus: str_(t.toStatus), detail: str_(t.detail),
+          fromLabel: str_(t.fromStatus) ? statusInfo_(t.fromStatus).label : '',
+          toLabel: str_(t.toStatus) ? statusInfo_(t.toStatus).label : ''
         };
       })
     };

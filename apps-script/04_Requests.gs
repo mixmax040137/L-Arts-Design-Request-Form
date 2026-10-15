@@ -327,7 +327,11 @@ function getPublicView_(jobId, email, token) {
   var timeline = getTimeline_(id)
     .filter(function (t) { return str_(t.action) !== 'EMAIL_ERROR' && str_(t.action) !== 'NOTE'; })
     .map(function (t) {
-      return { at: str_(t.at), action: str_(t.action), toStatus: str_(t.toStatus), detail: str_(t.detail) };
+      return {
+        at: str_(t.at), action: str_(t.action), toStatus: str_(t.toStatus),
+        toLabel: str_(t.toStatus) ? statusInfo_(t.toStatus).label : '',
+        detail: str_(t.detail)
+      };
     });
 
   var files = filterBy_(SHEET.ATTACHMENTS, 'jobId', id)
@@ -364,15 +368,20 @@ function getPublicView_(jobId, email, token) {
 
 /* ------------------------------------------------------- Status & actions */
 
-/** ตรวจว่าเปลี่ยนสถานะได้หรือไม่ */
-function canTransition_(from, to) {
+/** ตรวจว่าเป็นขั้นถัดไปตามขั้นตอนปกติหรือไม่ (ไม่ใช่การข้ามขั้น) */
+function isNormalTransition_(from, to) {
   var allowed = STATUS_TRANSITIONS[str_(from).toUpperCase()];
   if (!allowed) return false;
   return allowed.indexOf(str_(to).toUpperCase()) >= 0;
 }
 
+/** สถานะที่งานถือว่าเริ่มลงมือออกแบบแล้ว */
+var WORK_STARTED_STATUSES = ['DESIGNING', 'REVIEW', 'REVISING', 'DELIVERED'];
+
 /**
  * เปลี่ยนสถานะงาน (ใช้โดยเจ้าหน้าที่)
+ * เปลี่ยนไปสถานะใดก็ได้ที่ไม่ใช่สถานะเดิม รวมถึงข้ามขั้นและเปิดงานที่ปิดแล้วอีกครั้ง
+ * ข้อมูลวันที่ของงานจะถูกปรับให้สอดคล้องกับสถานะใหม่เสมอ เพื่อให้แดชบอร์ดนับถูก
  * options: { detail, draftUrl, cancelReason, notify }
  */
 function changeStatus_(jobId, toStatus, actor, options) {
@@ -384,15 +393,25 @@ function changeStatus_(jobId, toStatus, actor, options) {
     var to = str_(toStatus).toUpperCase();
     if (!STATUS[to]) throw appError_('สถานะปลายทางไม่ถูกต้อง');
     if (from === to) throw appError_('งานนี้อยู่ในสถานะ "' + statusInfo_(to).label + '" อยู่แล้ว');
-    if (!canTransition_(from, to)) {
-      throw appError_('ไม่สามารถเปลี่ยนสถานะจาก "' + statusInfo_(from).label +
-        '" ไปเป็น "' + statusInfo_(to).label + '" ได้');
-    }
 
     var patch = { status: to, updatedAt: nowIso_(), updatedBy: str_(actor) };
 
-    if (to === STATUS.DESIGNING.key && !str_(req.startedAt)) {
+    // ข้ามจากรับคำขอไปรอตรวจร่างหรือส่งมอบเลยก็ถือว่าเริ่มงานแล้ว
+    if (WORK_STARTED_STATUSES.indexOf(to) >= 0 && !str_(req.startedAt)) {
       patch.startedAt = nowIso_();
+    }
+
+    // เปิดงานที่ปิดไปแล้วอีกครั้ง ต้องล้างข้อมูลการปิดงานเดิม
+    // ไม่เช่นนั้นแดชบอร์ดจะนับระยะเวลาและวันส่งมอบผิด
+    if (to !== STATUS.DELIVERED.key && str_(req.deliveredAt)) {
+      patch.deliveredAt = '';
+      patch.leadTimeDays = '';
+    }
+    if (to !== STATUS.CANCELLED.key && str_(req.cancelReason)) {
+      patch.cancelReason = '';
+    }
+    if (to !== STATUS.DELIVERED.key && to !== STATUS.CANCELLED.key && str_(req.closedAt)) {
+      patch.closedAt = '';
     }
 
     if (to === STATUS.REVIEW.key) {
