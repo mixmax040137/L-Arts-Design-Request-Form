@@ -25,7 +25,7 @@
         </button>
         <div class="dropdown" id="user-menu" style="display:none">
           <button class="btn btn-sm btn-ghost dropdown-toggle" data-bs-toggle="dropdown">
-            <i class="bi bi-person-circle me-1"></i><span id="user-name">เจ้าหน้าที่</span>
+            <i class="bi bi-person-circle"></i><span id="user-name" class="d-none d-sm-inline ms-1">เจ้าหน้าที่</span>
           </button>
           <ul class="dropdown-menu dropdown-menu-end shadow-sm border-0" style="border-radius:14px">
             <li><a class="dropdown-item" href="#" onclick="App.go('admin');return false">
@@ -144,6 +144,11 @@
               </div>
               แบบฟอร์มนี้เป็นช่องทางรับคำขอออกแบบเพียงช่องทางเดียวของฝ่ายสื่อสารองค์กร
               การกรอกข้อมูลให้ครบถ้วนตั้งแต่ต้นจะช่วยให้เริ่มงานได้เร็วขึ้นและลดการติดต่อกลับหลายรอบ
+            </div>
+            <div id="f-remembered" class="notice-soft mb-3 d-none">
+              <i class="bi bi-person-check me-1"></i>เติมข้อมูลผู้ประสานงานจากคำขอครั้งก่อนให้แล้ว
+              <button type="button" class="btn btn-link btn-sm p-0 ms-1 align-baseline"
+                onclick="Form.forgetContact()">ไม่ใช่ฉัน ล้างข้อมูล</button>
             </div>
             <div class="row g-3">
               <div class="col-md-6">
@@ -438,32 +443,41 @@
     </div>
 
     <div id="admin-queue" class="admin-tab">
+      <div class="queue-chips mb-3" id="queue-chips"></div>
       <div class="card-soft p-3 mb-3">
         <div class="row g-2 align-items-end">
-          <div class="col-md-4">
-            <label class="form-label">ค้นหา</label>
-            <input type="text" class="form-control form-control-sm" id="q-search"
-              placeholder="เลขที่คำขอ ชื่อโครงการ ผู้ขอ หน่วยงาน" oninput="Admin.debouncedLoadQueue()">
+          <div class="col-md-5">
+            <label class="form-label" for="q-search">ค้นหา</label>
+            <div class="position-relative">
+              <i class="bi bi-search search-ico"></i>
+              <input type="search" class="form-control form-control-sm ps-search" id="q-search"
+                placeholder="เลขที่คำขอ ชื่อโครงการ ผู้ขอ หน่วยงาน เบอร์โทร" oninput="Admin.renderQueue()">
+            </div>
           </div>
-          <div class="col-md-3">
-            <label class="form-label">สถานะ</label>
-            <select class="form-select form-select-sm" id="q-status" onchange="Admin.loadQueue()"></select>
-          </div>
-          <div class="col-md-3">
-            <label class="form-label">ความเร่งด่วน</label>
-            <select class="form-select form-select-sm" id="q-priority" onchange="Admin.loadQueue()">
+          <div class="col-6 col-md-2">
+            <label class="form-label" for="q-priority">ความเร่งด่วน</label>
+            <select class="form-select form-select-sm" id="q-priority" onchange="Admin.renderQueue()">
               <option value="">ทุกระดับ</option>
               <option value="URGENT">ด่วนมาก</option>
               <option value="HIGH">ด่วน</option>
               <option value="NORMAL">ปกติ</option>
             </select>
           </div>
-          <div class="col-md-2 d-grid">
-            <button class="btn btn-sm btn-ghost" onclick="Admin.exportCsv()">
-              <i class="bi bi-download me-1"></i>ส่งออก CSV
-            </button>
+          <div class="col-6 col-md-2">
+            <label class="form-label" for="q-sort">เรียงตาม</label>
+            <select class="form-select form-select-sm" id="q-sort" onchange="Admin.renderQueue()">
+              <option value="due">กำหนดใช้งานใกล้สุด</option>
+              <option value="new">ยื่นคำขอล่าสุด</option>
+            </select>
+          </div>
+          <div class="col-md-3 d-flex gap-2">
+            <button class="btn btn-sm btn-ghost flex-fill" id="q-refresh" onclick="Admin.loadQueue()"
+              title="โหลดคิวงานล่าสุด"><i class="bi bi-arrow-clockwise me-1"></i>รีเฟรช</button>
+            <button class="btn btn-sm btn-ghost flex-fill" onclick="Admin.exportCsv()"
+              title="ส่งออกรายการที่แสดงอยู่"><i class="bi bi-download me-1"></i>CSV</button>
           </div>
         </div>
+        <div class="queue-meta mt-2" id="queue-meta"></div>
       </div>
       <div class="card-soft p-0 overflow-hidden">
         <div class="table-responsive">

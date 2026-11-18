@@ -697,8 +697,19 @@ group('8. รอบการแก้ไขและการอนุมัต�
     const view = app.ctx.getPublicView_(jobId, email, '');
     assertEqual(view.revisionCount, 4);
     assertEqual(view.revisionLimit, 5);
-    assertEqual(view.canRequestRevision, true);
     assertEqual(view.revisions.length, 4);
+    // เพิ่งอนุมัติร่างไปในเทสต์ก่อนหน้า จึงต้องซ่อนปุ่มอนุมัติและปุ่มขอแก้ไข
+    assertEqual(view.approved, true);
+    assertEqual(view.canApprove, false, 'อนุมัติแล้วต้องไม่ให้อนุมัติซ้ำ');
+    assertEqual(view.canRequestRevision, false, 'อนุมัติแล้วต้องไม่ให้ขอแก้ไขต่อ');
+
+    // ส่งร่างใหม่ให้ตรวจ สิทธิ์ต้องกลับมา
+    app.ctx.changeStatus_(jobId, 'DESIGNING', 'เจ้าหน้าที่', {});
+    app.ctx.changeStatus_(jobId, 'REVIEW', 'เจ้าหน้าที่', { draftUrl: 'https://canva.com/final-2' });
+    const again = app.ctx.getPublicView_(jobId, email, '');
+    assertEqual(again.approved, false);
+    assertEqual(again.canApprove, true);
+    assertEqual(again.canRequestRevision, true);
   });
 }
 
@@ -2149,6 +2160,281 @@ group('22. เปลี่ยนสถานะได้อิสระ (ข้�
     assertEqual(row.toLabel, 'ส่งมอบแล้ว');
     const pub = app.ctx.getPublicView_(jobId, requester, '').timeline.filter((t) => t.action === 'STATUS')[0];
     assertEqual(pub.toLabel, 'ส่งมอบแล้ว');
+  });
+}
+
+/* ==========================================================================
+   23. แก้บั๊กรอบตรวจทั้งระบบ (ข้อมูลในชีต ความเร็ว และสิทธิ์)
+   ========================================================================== */
+group('23. แก้บั๊กรอบตรวจทั้งระบบ');
+
+{
+  const requester = 'thitiwut@arts.tu.ac.th';
+  const app0 = loadApp();
+  function loginAdmin(app) { return app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token; }
+  function addStaff(app, email, role) {
+    app.ctx.saveUser_(loginAdmin(app), { email, name: 'บัญชี ' + email, role: role || 'staff', password: 'Password123' });
+    return app.ctx.login_(email, 'Password123').token;
+  }
+
+  test('เบอร์โทรที่ขึ้นต้นด้วย 0 ไม่หายเมื่อบันทึกลงชีต', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload({ requesterPhone: '095-814-4106' }));
+    assertEqual(app.ctx.str_(app.ctx.getRequest_(job.jobId).requesterPhone), '0958144106');
+  });
+
+  test('ข้อความที่ขึ้นต้นด้วย - = + @ ถูกเก็บเป็นข้อความ ไม่กลายเป็นสูตรหรือ #ERROR!', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload({
+      projectName: '=HYPERLINK("https://evil.example","คลิก")',
+      mandatoryText: '- วันที่ 20 ตุลาคม เวลา 10.00 น.\n- ห้อง 206',
+      keyMessage: '+ เปิดรับสมัครแล้ววันนี้',
+      notes: '@ทีมออกแบบ ขอโทนสีส้ม'
+    }));
+    const r = app.ctx.getRequest_(job.jobId);
+    assertEqual(r.projectName, '=HYPERLINK("https://evil.example","คลิก")');
+    assertEqual(r.mandatoryText, '- วันที่ 20 ตุลาคม เวลา 10.00 น.\n- ห้อง 206');
+    assertEqual(r.keyMessage, '+ เปิดรับสมัครแล้ววันนี้');
+    assertEqual(r.notes, '@ทีมออกแบบ ขอโทนสีส้ม');
+  });
+
+  test('การแก้ไขค่าในแถวเดิมก็ป้องกันเหมือนกัน', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload());
+    app.ctx.assignRequest_(job.jobId, '-ทีมกราฟิก', 'ผู้ดูแลระบบ');
+    assertEqual(app.ctx.getRequest_(job.jobId).assignedTo, '-ทีมกราฟิก');
+  });
+
+  test('เบอร์โทรเดิมที่เลข 0 หายไปแล้ว แสดงผลถูกต้องทั้งในคิวงานและอีเมล', () => {
+    assertEqual(app0.ctx.phoneOut_(958144106), '0958144106', 'มือถือ 10 หลัก');
+    assertEqual(app0.ctx.phoneOut_(21234567), '021234567', 'โทรศัพท์บ้าน 9 หลัก');
+    assertEqual(app0.ctx.phoneOut_('0812345678'), '0812345678', 'ค่าที่ถูกต้องอยู่แล้วต้องไม่เปลี่ยน');
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload());
+    const row = app.ctx.getRequest_(job.jobId);
+    app.ctx.sheet_('Requests').getRange(row._row, app.ctx.COLUMNS.Requests.indexOf('requesterPhone') + 1).setValue(958144106);
+    assertEqual(app.ctx.listRequests_({})[0].requesterPhone, '0958144106');
+    assertEqual(app.ctx.listRequests_({ q: '0958144106' }).length, 1, 'ค้นหาด้วยเบอร์ที่มี 0 ต้องเจอ');
+  });
+
+  test('บันทึกค่าตั้งค่าแบบทั้งหมดหรือไม่บันทึกเลย เมื่อมีช่องใดผิด', () => {
+    const app = bootstrapApp();
+    const token = loginAdmin(app);
+    const res = app.ctx.apiAdminSaveSettings(token, { maxFiles: '12', maxFileMB: '0', revisionLimit: '99' });
+    assertEqual(res.ok, false);
+    assert(res.error.indexOf('ขนาดไฟล์') >= 0 && res.error.indexOf('รอบแก้ไข') >= 0, 'ต้องบอกทุกช่องที่ผิดในครั้งเดียว');
+    assertEqual(app.ctx.getSetting_('maxFiles', '8'), '8', 'ช่องที่ถูกต้องต้องยังไม่ถูกบันทึก');
+  });
+
+  test('บันทึกค่าตั้งค่าแล้วส่งค่าใหม่กลับไปให้แบบฟอร์มใช้ทันที', () => {
+    const app = bootstrapApp();
+    const res = app.ctx.apiAdminSaveSettings(loginAdmin(app), { maxFiles: '12', publicFormOpen: 'false' });
+    assertEqual(res.ok, true);
+    assertEqual(res.data.saved, 2);
+    assertEqual(res.data.settings.maxFiles, 12);
+    assertEqual(res.data.settings.formOpen, false);
+    const again = app.ctx.apiAdminSaveSettings(loginAdmin(app), { maxFiles: '12' });
+    assertEqual(again.data.saved, 0, 'ค่าที่ไม่เปลี่ยนไม่ต้องเขียนซ้ำ');
+  });
+
+  test('ความเร่งด่วนคำนวณจากวันที่เหลือจริง ไม่ค้างค่าตอนยื่นคำขอ', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload({ dueDate: dateStr(30) }));
+    assertEqual(app.ctx.listRequests_({})[0].priority, 'NORMAL');
+    // จำลองเวลาผ่านไปจนเหลือ 2 วัน โดยเลื่อนกำหนดใช้งานในชีต (ค่าที่บันทึกยังเป็น NORMAL)
+    const row = app.ctx.getRequest_(job.jobId);
+    app.ctx.update_('Requests', row._row, { dueDate: dateStr(2) });
+    assertEqual(app.ctx.getRequest_(job.jobId).priority, 'NORMAL', 'ค่าในชีตยังเป็นค่าเดิม');
+    assertEqual(app.ctx.listRequests_({})[0].priority, 'URGENT', 'แต่คิวงานต้องแสดงตามจริง');
+    assertEqual(app.ctx.listRequests_({ priority: 'URGENT' }).length, 1, 'กรองด้วยความเร่งด่วนจริง');
+    const token = loginAdmin(app);
+    assertEqual(app.ctx.apiAdminGet(token, job.jobId).data.request.priority, 'URGENT');
+  });
+
+  test('อนุมัติร่างซ้ำไม่แจ้งเจ้าหน้าที่ซ้ำ และขอแก้ไขหลังอนุมัติไม่ได้', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload());
+    app.ctx.finalizeRequest_(job.jobId);
+    app.ctx.changeStatus_(job.jobId, 'REVIEW', 'เจ้าหน้าที่', { draftUrl: 'https://canva.com/d', notify: false });
+    const staffMails = () => app.state.outbox.filter((m) => /อนุมัติร่าง/.test(m.subject)).length;
+
+    assertEqual(app.ctx.approveDraft_(job.jobId, requester, '').approved, true);
+    assertEqual(staffMails(), 1);
+    const second = app.ctx.approveDraft_(job.jobId, requester, '');
+    assertEqual(second.alreadyApproved, true);
+    assertEqual(staffMails(), 1, 'กดซ้ำต้องไม่ส่งอีเมลซ้ำ');
+    assertEqual(app.ctx.getTimeline_(job.jobId).filter((t) => t.action === 'APPROVE').length, 1);
+    assertThrows(() => app.ctx.addRevision_(job.jobId, requester, '', 'ขอแก้สีพื้นหลังเป็นสีฟ้า'), 'อนุมัติร่างนี้แล้ว');
+  });
+
+  test('หน้าจัดการงานบอกว่าผู้ขออนุมัติร่างแล้ว', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload());
+    app.ctx.finalizeRequest_(job.jobId);
+    app.ctx.changeStatus_(job.jobId, 'REVIEW', 'เจ้าหน้าที่', { draftUrl: 'https://canva.com/d', notify: false });
+    const token = loginAdmin(app);
+    assertEqual(app.ctx.apiAdminGet(token, job.jobId).data.request.approved, false);
+    app.ctx.approveDraft_(job.jobId, requester, '');
+    const view = app.ctx.apiAdminGet(token, job.jobId).data.request;
+    assertEqual(view.approved, true);
+    assert(!!view.approvedAt, 'ต้องบอกเวลาที่อนุมัติ');
+  });
+
+  test('ทุกคำสั่งของเจ้าหน้าที่ส่งข้อมูลงานล่าสุดกลับมา ไม่ต้องโหลดซ้ำ', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload());
+    app.ctx.finalizeRequest_(job.jobId);
+    const token = loginAdmin(app);
+
+    const status = app.ctx.apiAdminChangeStatus(token, job.jobId, 'DESIGNING', { notify: false }).data;
+    assertEqual(status.job.request.status, 'DESIGNING');
+    assertEqual(status.job.row.status, 'DESIGNING', 'ต้องมีข้อมูลแถวสำหรับอัปเดตคิวงาน');
+
+    assertEqual(app.ctx.apiAdminAssign(token, job.jobId, 'ธิติวุฒิ').data.job.row.assignedTo, 'ธิติวุฒิ');
+    const note = app.ctx.apiAdminNote(token, job.jobId, 'โทรคุยกับผู้ขอแล้ว').data.job;
+    assert(note.timeline.some((t) => t.detail === 'โทรคุยกับผู้ขอแล้ว'), 'บันทึกภายในต้องอยู่ในข้อมูลที่ส่งกลับ');
+    assertEqual(app.ctx.apiAdminSetRevisionLimit(token, job.jobId, 5).data.job.request.revisionLimit, 5);
+    assertEqual(app.ctx.apiAdminSetDraftUrl(token, job.jobId, 'https://canva.com/x').data.job.request.draftUrl,
+      'https://canva.com/x');
+    assertEqual(app.ctx.apiAdminRegenerateBrief(token, job.jobId).data.job.request.briefStatus, 'DONE');
+
+    const up = app.ctx.apiAdminUploadFile(token, job.jobId, {
+      fileName: 'final.pdf', mimeType: 'application/pdf', dataB64: app0.ctx.Utilities.base64Encode('pdf')
+    }, 'final').data;
+    const del = app.ctx.apiAdminDeleteFile(token, up.id).data;
+    assertEqual(del.job.attachments.length, 0, 'ลบไฟล์แล้วข้อมูลที่ส่งกลับต้องไม่มีไฟล์นั้น');
+  });
+
+  test('ผู้ดูแลระบบลดสิทธิ์หรือปิดใช้งานบัญชีตนเองไม่ได้', () => {
+    const app = bootstrapApp();
+    const token = loginAdmin(app);
+    assertThrows(() => app.ctx.saveUser_(token, {
+      email: 'pr@arts.tu.ac.th', name: 'ผู้ดูแลระบบ', role: 'staff'
+    }), 'ตนเอง');
+    assertThrows(() => app.ctx.saveUser_(token, {
+      email: 'pr@arts.tu.ac.th', name: 'ผู้ดูแลระบบ', role: 'admin', active: false
+    }), 'ตนเอง');
+    assertEqual(app.ctx.verifyToken_(token).role, 'admin', 'สิทธิ์ต้องไม่เปลี่ยน');
+  });
+
+  test('ระบบต้องเหลือผู้ดูแลระบบที่ใช้งานได้อย่างน้อยหนึ่งคนเสมอ', () => {
+    const app = bootstrapApp();
+    const admin2 = addStaff(app, 'admin2@arts.tu.ac.th', 'admin');
+    // admin2 ปิดใช้งาน pr@arts ได้ เพราะยังเหลือ admin2
+    app.ctx.saveUser_(admin2, { email: 'pr@arts.tu.ac.th', name: 'ผู้ดูแลระบบ', role: 'admin', active: false });
+    assertEqual(app.ctx.otherActiveAdmins_('admin2@arts.tu.ac.th'), 0, 'เหลือ admin2 เป็นผู้ดูแลคนเดียว');
+    // เปิด pr@arts กลับมาแต่เป็นเจ้าหน้าที่ แล้วพยายามให้เหลือศูนย์ผ่านการแก้บัญชี admin2 โดยตรงในฟังก์ชันตรวจ
+    assertThrows(() => app.ctx.saveUser_(admin2, {
+      email: 'admin2@arts.tu.ac.th', name: 'ผู้ดูแลคนที่สอง', role: 'staff'
+    }), 'ตนเอง');
+  });
+
+  test('ผู้ดูแลระบบลดสิทธิ์ผู้ดูแลอีกคนได้ เมื่อยังเหลือผู้ดูแลอย่างน้อยหนึ่งคน', () => {
+    const app = bootstrapApp();
+    const token = loginAdmin(app);
+    addStaff(app, 'admin2@arts.tu.ac.th', 'admin');
+    const res = app.ctx.saveUser_(token, { email: 'admin2@arts.tu.ac.th', name: 'ผู้ดูแลคนที่สอง', role: 'staff' });
+    assertEqual(res.updated, true);
+  });
+
+  test('เปลี่ยนรหัสผ่านแล้ว เซสชันเก่าบนเครื่องอื่นใช้ไม่ได้ทันที', () => {
+    const app = bootstrapApp();
+    const oldToken = loginAdmin(app);
+    const otherDevice = loginAdmin(app);
+    app.ctx.changePassword_(oldToken, 'SuperSecret123', 'NewPassword456');
+    assertEqual(app.ctx.verifyToken_(otherDevice), null, 'token ที่ออกก่อนเปลี่ยนรหัสต้องใช้ไม่ได้');
+    assert(!!app.ctx.verifyToken_(app.ctx.login_('pr@arts.tu.ac.th', 'NewPassword456').token), 'รหัสใหม่ต้องใช้ได้');
+  });
+
+  test('ข้อผิดพลาดเรื่องสิทธิ์มีรหัสให้หน้าเว็บแยกได้ ไม่ต้องเดาจากข้อความ', () => {
+    const app = bootstrapApp();
+    assertEqual(app.ctx.apiAdminList('', {}).code, 'AUTH');
+    const staffToken = addStaff(app, 'staff@arts.tu.ac.th');
+    assertEqual(app.ctx.apiAdminSettings(staffToken).code, 'FORBIDDEN');
+    assertEqual(app.ctx.apiTrack('', '', '').code, '', 'ข้อผิดพลาดทั่วไปไม่มีรหัส');
+  });
+
+  test('สรุป Design Brief ไม่เขียนทับคำขอใบอื่น เมื่อมีการลบคำขอระหว่างรอ AI', () => {
+    let app;
+    let deleteDuring = '';
+    const handler = function () {
+      if (deleteDuring) { app.ctx.deleteRequest_(deleteDuring, 'ผู้ดูแลระบบ'); deleteDuring = ''; }
+      return claudeOkHandler();
+    };
+    app = bootstrapApp({ fetchHandler: handler });
+    app.ctx.setAnthropicApiKey('sk-ant-test-key');
+    const a = app.ctx.createRequest_(samplePayload({ projectName: 'งานใบแรก' }));
+    const b = app.ctx.createRequest_(samplePayload({ projectName: 'งานใบที่สอง' }));
+    const c = app.ctx.createRequest_(samplePayload({ projectName: 'งานใบที่สาม' }));
+    deleteDuring = a.jobId;
+    app.ctx.generateBrief_(b.jobId, true);
+    assertEqual(app.ctx.getRequest_(b.jobId).briefStatus, 'DONE', 'งานใบที่สองต้องได้ผลสรุป');
+    assertEqual(app.ctx.getRequest_(c.jobId).briefStatus, 'PENDING', 'งานใบที่สามต้องไม่ถูกเขียนทับ');
+  });
+
+  test('งานเบื้องหลังไม่ทำงานซ้อนกันเมื่อรอบก่อนยังไม่เสร็จ', () => {
+    const app = bootstrapApp({ fetchHandler: claudeOkHandler });
+    app.ctx.setAnthropicApiKey('sk-ant-test-key');
+    const job = app.ctx.createRequest_(samplePayload());
+    app.ctx.finalizeRequest_(job.jobId);
+    app.ctx.CacheService.getScriptCache().put('worker:running', '1', 300);
+    app.ctx.workerTick();
+    assertEqual(app.ctx.getRequest_(job.jobId).briefStatus, 'PENDING', 'ต้องรอรอบถัดไป');
+    app.ctx.CacheService.getScriptCache().remove('worker:running');
+    app.ctx.workerTick();
+    assertEqual(app.ctx.getRequest_(job.jobId).briefStatus, 'DONE');
+  });
+
+  test('ลิงก์ในอีเมลถึงเจ้าหน้าที่เปิดคำขอใบนั้นได้ทันที', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload());
+    app.ctx.finalizeRequest_(job.jobId);
+    const mail = app.state.outbox.filter((m) => /คำขอออกแบบใหม่/.test(m.subject))[0];
+    assert(mail.htmlBody.indexOf('page=admin&amp;job=' + job.jobId) >= 0, 'ลิงก์ต้องพาไปที่งานใบนี้');
+  });
+
+  test('ไฟล์ส่งออกมีเบอร์โทร อีเมล ชิ้นงาน และวันที่ส่งมอบ', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload({ requesterPhone: '0812345678' }));
+    app.ctx.changeStatus_(job.jobId, 'DELIVERED', 'เจ้าหน้าที่', { notify: false });
+    const out = app.ctx.apiAdminExport(loginAdmin(app), {}).data;
+    const row = out.rows[0];
+    const col = (name) => row[out.header.indexOf(name)];
+    assertEqual(col('โทรศัพท์'), '0812345678');
+    assertEqual(col('อีเมล'), requester);
+    assert(String(col('ชิ้นงาน')).indexOf('โปสเตอร์') >= 0, 'ต้องมีรายการชิ้นงาน');
+    assert(!!col('วันที่ส่งมอบ'), 'ต้องมีวันที่ส่งมอบ');
+  });
+
+  test('ลิงก์ติดตามยังใช้ได้แม้ token ในชีตเสียเพราะถูกตีความเป็นสูตร', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload());
+    const row = app.ctx.getRequest_(job.jobId);
+    // จำลองแถวเก่าที่ token ขึ้นต้นด้วย - แล้ว Sheets แปลงเป็น #ERROR!
+    app.ctx.sheet_('Requests').getRange(row._row, app.ctx.COLUMNS.Requests.indexOf('trackToken') + 1)
+      .setValues([['#ERROR!']]);
+    const url = app.ctx.buildTrackUrl_(app.ctx.getRequest_(job.jobId));
+    const t = decodeURIComponent(url.split('&t=')[1]);
+    assert(app.ctx.verifyTrackToken_(job.jobId, t), 'token ในลิงก์ต้องผ่านการตรวจสอบ');
+    assert(!!app.ctx.getPublicView_(job.jobId, '', t), 'เปิดหน้าติดตามด้วยลิงก์นี้ได้');
+  });
+
+  test('token ที่ขึ้นต้นด้วยขีดถูกบันทึกเป็นข้อความ', () => {
+    assertEqual(app0.ctx.sheetValue_('-AbC_123'), "'-AbC_123");
+    assertEqual(app0.ctx.sheetValue_('AbC-123'), 'AbC-123', 'ขีดตรงกลางไม่ต้องป้องกัน');
+    assertEqual(app0.ctx.sheetValue_(15), 15, 'ตัวเลขจริงคงเดิม');
+    assertEqual(app0.ctx.sheetValue_('2569'), '2569', 'ตัวเลขที่ไม่ขึ้นต้นด้วย 0 ไม่ต้องป้องกัน');
+  });
+
+  test('หน้าเว็บได้ข้อมูลตั้งต้นมาพร้อมหน้าเลย ไม่ต้องเรียกเซิร์ฟเวอร์อีกรอบ', () => {
+    const app = bootstrapApp();
+    app.ctx.doGet({ parameter: { page: 'admin', job: 'dr-2569-0001' } });
+    const boot = JSON.parse(app.state.lastTemplate.boot);
+    assert(!!boot.cfg, 'ต้องมีข้อมูลตั้งต้น');
+    assertEqual(boot.cfg.settings.maxFiles, 8);
+    assertEqual(boot.cfg.needsFirstAdmin, false);
+    assertEqual(boot.jobId, 'DR-2569-0001', 'เลขที่งานจากลิงก์อีเมลต้องส่งต่อให้หน้าเว็บ');
+    assertEqual(JSON.stringify(boot.cfg).indexOf('sk-ant'), -1, 'ต้องไม่มีข้อมูลลับ');
   });
 }
 

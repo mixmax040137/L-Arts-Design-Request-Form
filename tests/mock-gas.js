@@ -60,6 +60,26 @@ const Utilities = {
 
 /* ---------------------------------------------------------- Spreadsheet */
 
+/**
+ * จำลองการตีความค่าของ Google Sheets เมื่อเขียนข้อความลงเซลล์
+ * (เหมือนคนพิมพ์เอง) เพื่อให้เทสต์จับปัญหาเลข 0 หายและการตีความเป็นสูตรได้
+ *  - ' นำหน้า   → เก็บเป็นข้อความ โดยตัด ' ออก
+ *  - = + - @    → ถูกตีความเป็นสูตร ได้ค่าผิดพลาด
+ *  - ตัวเลขล้วน → กลายเป็นตัวเลข เลข 0 นำหน้าหาย
+ *  - TRUE/FALSE → กลายเป็นค่าตรรกะ
+ * (ไม่จำลองการแปลงวันที่ เพราะโค้ดอ่านได้ทั้งสองแบบอยู่แล้ว)
+ */
+function sheetsParse(v) {
+  if (typeof v !== 'string' || v === '') return v;
+  if (v.charAt(0) === "'") return v.substring(1);
+  if (/^[=@]/.test(v)) return '#NAME?';
+  if (/^[+-]?[0-9]+(\.[0-9]+)?$/.test(v)) return Number(v);
+  if (/^[+-]/.test(v)) return '#ERROR!';
+  if (/^true$/i.test(v)) return true;
+  if (/^false$/i.test(v)) return false;
+  return v;
+}
+
 class MockRange {
   constructor(sheet, row, col, numRows, numCols) {
     this.sheet = sheet; this.row = row; this.col = col;
@@ -83,7 +103,7 @@ class MockRange {
       const target = this.row - 1 + r;
       while (this.sheet._data.length <= target) this.sheet._data.push([]);
       for (let c = 0; c < values[r].length; c++) {
-        this.sheet._data[target][this.col - 1 + c] = values[r][c];
+        this.sheet._data[target][this.col - 1 + c] = sheetsParse(values[r][c]);
       }
     }
     return this;
@@ -118,7 +138,7 @@ class MockSheet {
     return max;
   }
   appendRow(values) {
-    this._data[this.getLastRow()] = values.slice();
+    this._data[this.getLastRow()] = values.map(sheetsParse);
     return this;
   }
   deleteRow(rowIndex) { this._data.splice(rowIndex - 1, 1); return this; }
@@ -366,7 +386,7 @@ function createRuntime(options) {
 
   const HtmlService = {
     XFrameOptionsMode: { ALLOWALL: 'ALLOWALL', DEFAULT: 'DEFAULT' },
-    createTemplateFromFile: (name) => ({
+    createTemplateFromFile: (name) => (state.lastTemplate = {
       _name: name,
       evaluate: function () {
         return {

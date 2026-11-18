@@ -17,12 +17,21 @@ function hashPassword_(password, salt) {
   return acc;
 }
 
+/**
+ * ลายนิ้วมือของรหัสผ่านปัจจุบัน ฝังไว้ใน token
+ * เปลี่ยนรหัสผ่านแล้ว salt เปลี่ยน token เก่าบนเครื่องอื่นจึงใช้ไม่ได้ทันที
+ */
+function passwordStamp_(salt) {
+  return hmac_('stamp:' + str_(salt), getProp_(PROP.SECRET)).substring(0, 12);
+}
+
 /** สร้าง token ของ session */
 function makeToken_(user) {
   var payload = {
     e: str_(user.email),
     n: str_(user.name),
     r: str_(user.role) || 'staff',
+    k: passwordStamp_(user.salt),
     exp: new Date().getTime() + SESSION_TTL_MS
   };
   var encoded = b64url_(JSON.stringify(payload));
@@ -53,6 +62,8 @@ function verifyToken_(token) {
   var user = findBy_(SHEET.USERS, 'email', str_(payload.e).toLowerCase());
   if (!user) return null;
   if (str_(user.active).toUpperCase() !== 'TRUE') return null;
+  // token ที่ออกก่อนเปลี่ยนรหัสผ่านใช้ไม่ได้อีก (token รุ่นเก่าที่ไม่มีค่านี้ยังใช้ได้จนหมดอายุ)
+  if (payload.k && payload.k !== passwordStamp_(user.salt)) return null;
 
   return { email: str_(user.email), name: str_(user.name), role: str_(user.role) || 'staff' };
 }
@@ -60,7 +71,11 @@ function verifyToken_(token) {
 /** ตรวจสิทธิ์ ถ้าไม่ผ่านจะโยน error */
 function requireAuth_(token) {
   var user = verifyToken_(token);
-  if (!user) throw appError_('เซสชันหมดอายุหรือยังไม่ได้เข้าสู่ระบบ กรุณาเข้าสู่ระบบใหม่');
+  if (!user) {
+    var e = appError_('เซสชันหมดอายุหรือยังไม่ได้เข้าสู่ระบบ กรุณาเข้าสู่ระบบใหม่');
+    e.code = 'AUTH'; // หน้าเว็บใช้รหัสนี้พาไปหน้าเข้าสู่ระบบ
+    throw e;
+  }
   return user;
 }
 
@@ -68,9 +83,20 @@ function requireAuth_(token) {
 function requireAdmin_(token) {
   var user = requireAuth_(token);
   if (str_(user.role) !== 'admin') {
-    throw appError_('เฉพาะผู้ดูแลระบบเท่านั้นที่ใช้คำสั่งนี้ได้');
+    var e = appError_('เฉพาะผู้ดูแลระบบเท่านั้นที่ใช้คำสั่งนี้ได้');
+    e.code = 'FORBIDDEN';
+    throw e;
   }
   return user;
+}
+
+/** จำนวนผู้ดูแลระบบที่ยังเปิดใช้งาน ไม่นับบัญชีที่ระบุ */
+function otherActiveAdmins_(exceptEmail) {
+  var except = str_(exceptEmail).toLowerCase();
+  return readAll_(SHEET.USERS).filter(function (u) {
+    return str_(u.role) === 'admin' && str_(u.active).toUpperCase() === 'TRUE' &&
+      str_(u.email).toLowerCase() !== except;
+  }).length;
 }
 
 /** นับความพยายามเข้าสู่ระบบที่ผิดพลาด */
@@ -173,6 +199,21 @@ function saveUser_(token, payload) {
 
   var existing = findBy_(SHEET.USERS, 'email', mail);
   if (existing) {
+    if (mail === me.email && p.active !== undefined && p.active !== true) {
+      throw appError_('ไม่สามารถปิดใช้งานบัญชีของตนเองได้');
+    }
+    if (mail === me.email && role !== 'admin') {
+      throw appError_('ไม่สามารถลดสิทธิ์ผู้ดูแลระบบของบัญชีตนเองได้ ' +
+        'กรุณาให้ผู้ดูแลระบบคนอื่นเป็นผู้เปลี่ยนให้');
+    }
+    // กันไม่ให้ระบบเหลือผู้ดูแลระบบเป็นศูนย์ ซึ่งจะไม่มีใครเข้าหน้าตั้งค่าได้อีก
+    var wasActiveAdmin = str_(existing.role) === 'admin' &&
+      str_(existing.active).toUpperCase() === 'TRUE';
+    var staysActiveAdmin = role === 'admin' && (p.active === undefined || p.active === true);
+    if (wasActiveAdmin && !staysActiveAdmin && otherActiveAdmins_(mail) === 0) {
+      throw appError_('บัญชีนี้เป็นผู้ดูแลระบบคนสุดท้าย จึงลดสิทธิ์หรือปิดใช้งานไม่ได้ ' +
+        'กรุณาเพิ่มผู้ดูแลระบบคนอื่นก่อน');
+    }
     var patch = { name: name, role: role };
     if (password) {
       if (password.length < 8) throw appError_('รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร');
@@ -180,9 +221,6 @@ function saveUser_(token, payload) {
       patch.passwordHash = hashPassword_(password, patch.salt);
     }
     if (p.active !== undefined) {
-      if (mail === me.email && p.active !== true) {
-        throw appError_('ไม่สามารถปิดใช้งานบัญชีของตนเองได้');
-      }
       patch.active = p.active ? 'TRUE' : 'FALSE';
     }
     update_(SHEET.USERS, existing._row, patch);

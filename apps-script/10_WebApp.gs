@@ -39,7 +39,18 @@ function doGet(e) {
     console.error('ติดตั้งระบบอัตโนมัติไม่สำเร็จ: ' + installError);
   }
 
+  // ฝังข้อมูลตั้งต้นมากับหน้าเว็บเลย หน้าแรกจึงแสดงได้ทันทีโดยไม่ต้องเรียกเซิร์ฟเวอร์ซ้ำอีกรอบ
+  var cfg = null;
+  if (!installError) {
+    try {
+      cfg = bootstrapData_();
+    } catch (err) {
+      cfg = null; // หน้าเว็บจะเรียก apiBootstrap เองและแสดงข้อความผิดพลาดให้
+    }
+  }
+
   var boot = {
+    cfg: cfg,
     page: page,
     jobId: sanitizeParam_(params.job, /[^A-Za-z0-9-]/g, 30).toUpperCase(),
     trackToken: sanitizeParam_(params.t, /[^A-Za-z0-9_-]/g, 64),
@@ -74,7 +85,7 @@ function respond_(fn) {
         message = 'เกิดข้อผิดพลาดในระบบ กรุณาลองใหม่อีกครั้ง หากยังพบปัญหา กรุณาแจ้งฝ่ายสื่อสารองค์กร';
       }
     }
-    return { ok: false, error: message };
+    return { ok: false, error: message, code: (err && err.code) ? String(err.code) : '' };
   }
 }
 
@@ -82,29 +93,35 @@ function respond_(fn) {
 
 /** ข้อมูลตั้งต้นสำหรับหน้าเว็บ */
 function apiBootstrap() {
-  return respond_(function () {
-    return {
-      app: { name: APP.NAME, org: APP.ORG, orgShort: APP.ORG_SHORT, version: APP.VERSION },
-      needsFirstAdmin: readAll_(SHEET.USERS).length === 0,
-      mediaTypes: MEDIA_TYPES,
-      departments: DEPARTMENTS,
-      channels: CHANNELS,
-      statusFlow: STATUS_FLOW.map(function (k) {
-        return { key: k, label: STATUS[k].label, en: STATUS[k].en, step: STATUS[k].step };
-      }),
-      settings: {
-        revisionLimit: getSettingInt_('revisionLimit', 3),
-        minLeadDays: getSettingInt_('minLeadDays', 7),
-        slaFirstDraftDays: getSettingInt_('slaFirstDraftDays', 5),
-        maxFileMB: getSettingInt_('maxFileMB', 10),
-        maxFiles: getSettingInt_('maxFiles', 8),
-        allowedFileTypes: getSetting_('allowedFileTypes', DEFAULT_SETTINGS.allowedFileTypes),
-        formOpen: getSettingBool_('publicFormOpen', true),
-        closedMessage: getSetting_('closedMessage', DEFAULT_SETTINGS.closedMessage),
-        contactEmail: getSetting_('replyTo', DEFAULT_SETTINGS.replyTo)
-      }
-    };
-  });
+  return respond_(bootstrapData_);
+}
+
+/** ข้อมูลตั้งต้นที่ทุกหน้าใช้ (ไม่มีข้อมูลลับ) */
+function bootstrapData_() {
+  return {
+    app: { name: APP.NAME, org: APP.ORG, orgShort: APP.ORG_SHORT, version: APP.VERSION },
+    needsFirstAdmin: readAll_(SHEET.USERS).length === 0,
+    mediaTypes: MEDIA_TYPES,
+    departments: DEPARTMENTS,
+    channels: CHANNELS,
+    statusFlow: STATUS_FLOW.map(function (k) {
+      return { key: k, label: STATUS[k].label, en: STATUS[k].en, step: STATUS[k].step };
+    }),
+    statusLabels: Object.keys(STATUS).map(function (k) {
+      return { key: k, label: STATUS[k].label, color: STATUS[k].color, icon: STATUS[k].icon };
+    }),
+    settings: {
+      revisionLimit: getSettingInt_('revisionLimit', 3),
+      minLeadDays: getSettingInt_('minLeadDays', 7),
+      slaFirstDraftDays: getSettingInt_('slaFirstDraftDays', 5),
+      maxFileMB: getSettingInt_('maxFileMB', 10),
+      maxFiles: getSettingInt_('maxFiles', 8),
+      allowedFileTypes: getSetting_('allowedFileTypes', DEFAULT_SETTINGS.allowedFileTypes),
+      formOpen: getSettingBool_('publicFormOpen', true),
+      closedMessage: getSetting_('closedMessage', DEFAULT_SETTINGS.closedMessage),
+      contactEmail: getSetting_('replyTo', DEFAULT_SETTINGS.replyTo)
+    }
+  };
 }
 
 var SUBMIT_RATE_LIMIT = 5;
@@ -241,87 +258,106 @@ function statusOptions_(current) {
 function apiAdminGet(token, jobId) {
   return respond_(function () {
     requireAuth_(token);
-    var full = getRequestFull_(jobId);
-    if (!full) throw appError_('ไม่พบเลขที่คำขอ ' + jobId);
-    var r = full.request;
-    var info = statusInfo_(r.status);
-    var p = priorityInfo_(r.priority);
-    return {
-      request: {
-        jobId: r.jobId,
-        createdAt: str_(r.createdAt),
-        submittedAt: str_(r.submittedAt),
-        status: info.key,
-        statusLabel: info.label,
-        statusColor: info.color,
-        nextStatuses: (STATUS_TRANSITIONS[info.key] || []).map(function (k) {
-          return { key: k, label: STATUS[k].label, color: STATUS[k].color };
-        }),
-        statusOptions: statusOptions_(info.key),
-        priority: p.key,
-        priorityLabel: p.label,
-        priorityColor: p.color,
-        requesterName: str_(r.requesterName),
-        requesterEmail: str_(r.requesterEmail),
-        requesterPhone: str_(r.requesterPhone),
-        department: str_(r.department),
-        lineId: str_(r.lineId),
-        projectName: str_(r.projectName),
-        eventDate: str_(r.eventDate),
-        dueDate: str_(r.dueDate),
-        objective: str_(r.objective),
-        targetAudience: str_(r.targetAudience),
-        keyMessage: str_(r.keyMessage),
-        mandatoryText: str_(r.mandatoryText),
-        referenceUrl: str_(r.referenceUrl),
-        channels: str_(r.channels),
-        notes: str_(r.notes),
-        rushReason: str_(r.rushReason),
-        folderUrl: str_(r.folderUrl),
-        draftUrl: str_(r.draftUrl),
-        briefStatus: str_(r.briefStatus),
-        briefText: str_(r.briefText),
-        briefMissing: str_(r.briefMissing),
-        briefSource: str_(r.briefSource),
-        briefGeneratedAt: str_(r.briefGeneratedAt),
-        revisionCount: int_(r.revisionCount),
-        revisionLimit: int_(r.revisionLimit),
-        assignedTo: str_(r.assignedTo),
-        deliveredAt: str_(r.deliveredAt),
-        leadTimeDays: str_(r.leadTimeDays),
-        cancelReason: str_(r.cancelReason),
-        trackUrl: buildTrackUrl_(r)
-      },
-      deliverables: full.deliverables.map(function (d) {
-        return {
-          seq: int_(d.seq), mediaLabel: str_(d.mediaLabel), size: str_(d.size),
-          quantity: int_(d.quantity), note: str_(d.note)
-        };
-      }),
-      attachments: listAttachments_(r.jobId),
-      revisions: full.revisions.map(function (v) {
-        return {
-          round: int_(v.round), createdAt: str_(v.createdAt), byName: str_(v.byName),
-          comment: str_(v.comment), draftUrl: str_(v.draftUrl)
-        };
-      }),
-      timeline: full.timeline.map(function (t) {
-        return {
-          at: str_(t.at), actor: str_(t.actor), action: str_(t.action),
-          fromStatus: str_(t.fromStatus), toStatus: str_(t.toStatus), detail: str_(t.detail),
-          fromLabel: str_(t.fromStatus) ? statusInfo_(t.fromStatus).label : '',
-          toLabel: str_(t.toStatus) ? statusInfo_(t.toStatus).label : ''
-        };
-      })
-    };
+    var view = adminJobView_(jobId);
+    if (!view) throw appError_('ไม่พบเลขที่คำขอ ' + str_(jobId).toUpperCase());
+    return view;
   });
+}
+
+/**
+ * ข้อมูลงานหนึ่งใบสำหรับหน้าต่างรายละเอียดของเจ้าหน้าที่
+ * ทุกคำสั่งที่แก้ไขงานจะส่งข้อมูลนี้กลับมาด้วย หน้าเว็บจึงไม่ต้องโหลดซ้ำอีกรอบ
+ * row คือข้อมูลแถวเดียวกันในคิวงาน ใช้อัปเดตตารางโดยไม่ต้องโหลดรายการใหม่ทั้งหมด
+ */
+function adminJobView_(jobId) {
+  var full = getRequestFull_(jobId);
+  if (!full) return null;
+  var r = full.request;
+  var info = statusInfo_(r.status);
+  var p = priorityInfo_(livePriority_(r));
+  var approval = draftApproval_(full.timeline);
+  var inReview = info.key === STATUS.REVIEW.key;
+  return {
+    request: {
+      jobId: r.jobId,
+      createdAt: str_(r.createdAt),
+      submittedAt: str_(r.submittedAt),
+      status: info.key,
+      statusLabel: info.label,
+      statusColor: info.color,
+      nextStatuses: (STATUS_TRANSITIONS[info.key] || []).map(function (k) {
+        return { key: k, label: STATUS[k].label, color: STATUS[k].color };
+      }),
+      statusOptions: statusOptions_(info.key),
+      priority: p.key,
+      priorityLabel: p.label,
+      priorityColor: p.color,
+      requesterName: str_(r.requesterName),
+      requesterEmail: str_(r.requesterEmail),
+      requesterPhone: phoneOut_(r.requesterPhone),
+      department: str_(r.department),
+      lineId: str_(r.lineId),
+      projectName: str_(r.projectName),
+      eventDate: str_(r.eventDate),
+      dueDate: str_(r.dueDate),
+      objective: str_(r.objective),
+      targetAudience: str_(r.targetAudience),
+      keyMessage: str_(r.keyMessage),
+      mandatoryText: str_(r.mandatoryText),
+      referenceUrl: str_(r.referenceUrl),
+      channels: str_(r.channels),
+      notes: str_(r.notes),
+      rushReason: str_(r.rushReason),
+      folderUrl: str_(r.folderUrl),
+      draftUrl: str_(r.draftUrl),
+      approved: inReview && approval.approved,
+      approvedAt: inReview ? approval.approvedAt : '',
+      briefStatus: str_(r.briefStatus),
+      briefText: str_(r.briefText),
+      briefMissing: str_(r.briefMissing),
+      briefSource: str_(r.briefSource),
+      briefGeneratedAt: str_(r.briefGeneratedAt),
+      revisionCount: int_(r.revisionCount),
+      revisionLimit: int_(r.revisionLimit),
+      assignedTo: str_(r.assignedTo),
+      deliveredAt: str_(r.deliveredAt),
+      leadTimeDays: str_(r.leadTimeDays),
+      cancelReason: str_(r.cancelReason),
+      trackUrl: buildTrackUrl_(r)
+    },
+    row: listRowView_(r),
+    deliverables: full.deliverables.map(function (d) {
+      return {
+        seq: int_(d.seq), mediaLabel: str_(d.mediaLabel), size: str_(d.size),
+        quantity: int_(d.quantity), note: str_(d.note)
+      };
+    }),
+    attachments: full.attachments.map(attachmentView_),
+    revisions: full.revisions.map(function (v) {
+      return {
+        round: int_(v.round), createdAt: str_(v.createdAt), byName: str_(v.byName),
+        comment: str_(v.comment), draftUrl: str_(v.draftUrl)
+      };
+    }),
+    timeline: full.timeline.map(function (t) {
+      return {
+        at: str_(t.at), actor: str_(t.actor), action: str_(t.action),
+        fromStatus: str_(t.fromStatus), toStatus: str_(t.toStatus), detail: str_(t.detail),
+        fromLabel: str_(t.fromStatus) ? statusInfo_(t.fromStatus).label : '',
+        toLabel: str_(t.toStatus) ? statusInfo_(t.toStatus).label : ''
+      };
+    })
+  };
 }
 
 function apiAdminChangeStatus(token, jobId, toStatus, options) {
   return respond_(function () {
     var me = requireAuth_(token);
     changeStatus_(jobId, toStatus, me.name || me.email, options);
-    return { jobId: str_(jobId).toUpperCase(), status: str_(toStatus).toUpperCase() };
+    return {
+      jobId: str_(jobId).toUpperCase(), status: str_(toStatus).toUpperCase(),
+      job: adminJobView_(jobId)
+    };
   });
 }
 
@@ -329,7 +365,7 @@ function apiAdminSetDraftUrl(token, jobId, url) {
   return respond_(function () {
     var me = requireAuth_(token);
     setDraftUrl_(jobId, url, me.name || me.email);
-    return true;
+    return { job: adminJobView_(jobId) };
   });
 }
 
@@ -337,14 +373,15 @@ function apiAdminAssign(token, jobId, assignee) {
   return respond_(function () {
     var me = requireAuth_(token);
     assignRequest_(jobId, assignee, me.name || me.email);
-    return true;
+    return { job: adminJobView_(jobId) };
   });
 }
 
 function apiAdminNote(token, jobId, note) {
   return respond_(function () {
     var me = requireAuth_(token);
-    return addInternalNote_(jobId, note, me.name || me.email);
+    addInternalNote_(jobId, note, me.name || me.email);
+    return { job: adminJobView_(jobId) };
   });
 }
 
@@ -352,7 +389,7 @@ function apiAdminSetRevisionLimit(token, jobId, limit) {
   return respond_(function () {
     var me = requireAuth_(token);
     setRevisionLimit_(jobId, limit, me.name || me.email);
-    return true;
+    return { job: adminJobView_(jobId) };
   });
 }
 
@@ -367,14 +404,18 @@ function apiAdminUploadFile(token, jobId, filePayload, kind) {
 function apiAdminDeleteFile(token, attachmentId) {
   return respond_(function () {
     var me = requireAuth_(token);
-    return deleteAttachment_(attachmentId, me.name || me.email);
+    var rec = findBy_(SHEET.ATTACHMENTS, 'id', attachmentId);
+    deleteAttachment_(attachmentId, me.name || me.email);
+    return { job: rec ? adminJobView_(rec.jobId) : null };
   });
 }
 
 function apiAdminRegenerateBrief(token, jobId) {
   return respond_(function () {
     requireAuth_(token);
-    return generateBrief_(jobId, true);
+    var result = generateBrief_(jobId, true);
+    result.job = adminJobView_(jobId);
+    return result;
   });
 }
 
@@ -489,14 +530,32 @@ function apiAdminSaveSettings(token, patch) {
   return respond_(function () {
     requireAdmin_(token);
     var p = patch || {};
-    var saved = 0;
+    // ตรวจทุกช่องก่อน ถ้ามีช่องใดผิดจะไม่บันทึกอะไรเลย
+    // (เดิมบันทึกทีละช่อง ช่องก่อนหน้าช่องที่ผิดจึงถูกบันทึกไปครึ่งเดียว)
+    var clean = {};
+    var errors = [];
     for (var key in p) {
       if (!Object.prototype.hasOwnProperty.call(p, key)) continue;
       if (!Object.prototype.hasOwnProperty.call(DEFAULT_SETTINGS, key)) continue;
-      setSetting_(key, sanitizeSetting_(key, p[key]));
-      saved++;
+      try {
+        clean[key] = sanitizeSetting_(key, p[key]);
+      } catch (err) {
+        errors.push(err.message);
+      }
     }
-    return { saved: saved };
+    if (errors.length > 0) throw appError_(errors.join('\n'));
+
+    var current = getSettings_();
+    var saved = 0;
+    withLock_(function () {
+      for (var k in clean) {
+        if (str_(current[k]) === clean[k]) continue;
+        setSetting_(k, clean[k]);
+        saved++;
+      }
+    });
+    // ส่งค่าที่หน้าเว็บใช้กลับไป แบบฟอร์มจะเปลี่ยนตามทันทีโดยไม่ต้องรีเฟรช
+    return { saved: saved, settings: bootstrapData_().settings };
   });
 }
 

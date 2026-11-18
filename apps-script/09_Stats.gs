@@ -166,12 +166,20 @@ function getStats_(filter) {
 /** ข้อมูลสำหรับส่งออกเป็น CSV (รายงานประจำปี) */
 function exportRows_(filter) {
   var rows = listRequests_(filter || {});
-  var header = ['เลขที่คำขอ', 'วันที่ยื่น', 'สถานะ', 'ความเร่งด่วน', 'ผู้ขอรับบริการ',
-    'หน่วยงาน', 'ชื่อโครงการ', 'กำหนดใช้งาน', 'ผู้รับผิดชอบ', 'รอบแก้ไข'];
+  var media = {};
+  var items = readAll_(SHEET.DELIVERABLES);
+  for (var i = 0; i < items.length; i++) {
+    var id = str_(items[i].jobId);
+    var label = str_(items[i].mediaLabel) + (int_(items[i].quantity) > 1 ? ' x' + int_(items[i].quantity) : '');
+    media[id] = media[id] ? media[id] + ', ' + label : label;
+  }
+  var header = ['เลขที่คำขอ', 'วันที่ยื่น', 'สถานะ', 'ความเร่งด่วน', 'ผู้ขอรับบริการ', 'อีเมล',
+    'โทรศัพท์', 'หน่วยงาน', 'ชื่อโครงการ', 'ชิ้นงาน', 'กำหนดใช้งาน', 'วันที่ส่งมอบ',
+    'ระยะเวลาดำเนินการ (วัน)', 'ผู้รับผิดชอบ', 'รอบแก้ไข'];
   var body = rows.map(function (r) {
-    return [r.jobId, r.createdAt, r.statusLabel, r.priorityLabel, r.requesterName,
-      r.department, r.projectName, r.dueDate, r.assignedTo,
-      r.revisionCount + '/' + r.revisionLimit];
+    return [r.jobId, r.createdAt, r.statusLabel, r.priorityLabel, r.requesterName, r.requesterEmail,
+      r.requesterPhone, r.department, r.projectName, media[str_(r.jobId)] || '', r.dueDate,
+      r.deliveredAt, r.leadTimeDays, r.assignedTo, r.revisionCount + '/' + r.revisionLimit];
   });
   return { header: header, rows: body };
 }

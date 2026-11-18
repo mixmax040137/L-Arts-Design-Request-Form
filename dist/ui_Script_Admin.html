@@ -8,41 +8,51 @@ var Admin = (function () {
   var user = null;
   var activeTab = 'queue';
   var queueCache = [];
+  var queueLoadedAt = 0;
+  var queueView = 'active';
+  var queueLoading = false;
   var currentJob = null;
-  var debounceTimer = null;
+  var pendingJob = '';
+  var usersCache = [];
+  var lastCsv = '';
 
   /* ------------------------------------------------------------- Session */
 
+  /** ตรวจเซสชันที่จำไว้ คืน Promise ที่เสร็จเมื่อรู้แล้วว่าเข้าสู่ระบบอยู่หรือไม่ */
   function init() {
     try { token = localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { token = ''; }
-
-    var statusSelect = document.getElementById('q-status');
-    statusSelect.innerHTML = '<option value="">ทุกสถานะ</option>' +
-      App.getCfg().statusFlow.map(function (s) {
-        return '<option value="' + s.key + '">' + App.esc(s.label) + '</option>';
-      }).join('') +
-      '<option value="INFO_NEEDED">รอข้อมูลเพิ่มเติม</option>' +
-      '<option value="CANCELLED">ยกเลิกคำขอ</option>';
 
     var tabs = document.querySelectorAll('#admin-tabs .tab-pill');
     for (var i = 0; i < tabs.length; i++) {
       tabs[i].addEventListener('click', function () { switchTab(this.getAttribute('data-tab')); });
     }
 
-    if (token) {
-      App.api('apiVerifySession', [token]).then(function (u) {
-        user = u;
-        showUserMenu();
-      }).catch(function () {
-        token = '';
-        try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
-      });
-    }
+    if (!token) return Promise.resolve(null);
+    return App.api('apiVerifySession', [token]).then(function (u) {
+      user = u;
+      showUserMenu();
+      return u;
+    }).catch(function () {
+      clearSession();
+      return null;
+    });
   }
 
   function isLoggedIn() { return !!token && !!user; }
 
   function isAdmin() { return isLoggedIn() && user.role === 'admin'; }
+
+  /** จำเลขที่งานจากลิงก์ในอีเมล ไว้เปิดให้ทันทีหลังเข้าสู่ระบบ */
+  function setPendingJob(jobId) { pendingJob = String(jobId || '').toUpperCase(); }
+
+  function clearSession() {
+    token = '';
+    user = null;
+    try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
+    queueCache = [];
+    queueLoadedAt = 0;
+    showUserMenu();
+  }
 
   function showUserMenu() {
     document.getElementById('user-menu').style.display = user ? '' : 'none';
@@ -74,21 +84,20 @@ var Admin = (function () {
   }
 
   function logout() {
-    token = '';
-    user = null;
-    try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
-    showUserMenu();
+    clearSession();
     App.toast('ออกจากระบบเรียบร้อย', 'ok');
     App.go('home');
   }
 
+  /** จัดการข้อผิดพลาดจากเซิร์ฟเวอร์ เซสชันหมดอายุจะพากลับไปหน้าเข้าสู่ระบบ */
   function handleAuthError(err) {
     App.loading(false);
-    if (err && /เซสชัน|สิทธิ์|เข้าสู่ระบบ/.test(err.message)) {
-      token = '';
-      user = null;
-      try { localStorage.removeItem(TOKEN_KEY); } catch (e) {}
-      showUserMenu();
+    setRefreshing(false);
+    if (err && err.code === 'AUTH') {
+      if (currentJob) setPendingJob(currentJob.request.jobId);
+      var modalEl = document.getElementById('jobModal');
+      if (modalEl) bootstrap.Modal.getOrCreateInstance(modalEl).hide();
+      clearSession();
       App.go('login');
     }
     App.toast(err.message, 'err');
@@ -97,6 +106,11 @@ var Admin = (function () {
   function onEnter() {
     if (!isLoggedIn()) { App.go('login'); return; }
     switchTab(activeTab);
+    if (pendingJob) {
+      var id = pendingJob;
+      pendingJob = '';
+      openJob(id);
+    }
   }
 
   function switchTab(tab) {
@@ -113,7 +127,11 @@ var Admin = (function () {
       assets: 'คลังผลงาน', settings: 'ตั้งค่าระบบ'
     };
     document.getElementById('admin-title').textContent = titles[tab] || '';
-    if (tab === 'queue') loadQueue();
+    if (tab === 'queue') {
+      // ใช้รายการที่โหลดไว้แสดงทันที แล้วค่อยโหลดใหม่เบื้องหลังถ้าเก่าเกิน 1 นาที
+      if (queueCache.length > 0) renderQueue();
+      if (Date.now() - queueLoadedAt > 60000) loadQueue({ quiet: queueCache.length > 0 });
+    }
     if (tab === 'dashboard') loadDashboard();
     if (tab === 'assets') loadAssets();
     if (tab === 'settings') loadSettings();
@@ -121,52 +139,146 @@ var Admin = (function () {
 
   /* --------------------------------------------------------------- คิวงาน */
 
-  function debouncedLoadQueue() {
-    clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(loadQueue, 400);
+  function isClosed(r) { return r.status === 'DELIVERED' || r.status === 'CANCELLED'; }
+
+  /** มุมมองคิวงาน: ปุ่มด้านบนตาราง กดแล้วกรองทันทีโดยไม่ต้องโหลดใหม่ */
+  function queueViews() {
+    var labels = {};
+    (App.getCfg().statusLabels || []).forEach(function (s) { labels[s.key] = s; });
+    var views = [
+      { key: 'active', label: 'งานที่ยังไม่เสร็จ', color: 'var(--primary)',
+        test: function (r) { return !isClosed(r); } },
+      { key: 'overdue', label: 'เกินกำหนด', color: 'var(--danger)', alert: true,
+        test: function (r) { return r.overdue; } }
+    ];
+    ['NEW', 'DESIGNING', 'REVIEW', 'REVISING', 'INFO_NEEDED', 'DELIVERED', 'CANCELLED'].forEach(function (k) {
+      var info = labels[k] || { label: k, color: 'var(--primary)' };
+      views.push({ key: k, label: info.label, color: info.color,
+        test: function (r) { return r.status === k; } });
+    });
+    views.push({ key: 'all', label: 'ทั้งหมด', color: 'var(--text-dark)',
+      test: function () { return true; } });
+    return views;
   }
 
-  function loadQueue() {
-    if (!isLoggedIn()) return;
-    var filter = {
-      q: document.getElementById('q-search').value.trim(),
-      status: document.getElementById('q-status').value,
-      priority: document.getElementById('q-priority').value
-    };
-    App.loading(true, 'กำลังโหลดคิวงาน...');
-    App.api('apiAdminList', [token, filter]).then(function (rows) {
+  function setQueueView(key) {
+    queueView = key;
+    renderQueue();
+  }
+
+  function setRefreshing(on) {
+    var btn = document.getElementById('q-refresh');
+    if (!btn) return;
+    btn.disabled = on;
+    btn.innerHTML = on ? '<i class="bi bi-arrow-clockwise spin me-1"></i>กำลังโหลด'
+      : '<i class="bi bi-arrow-clockwise me-1"></i>รีเฟรช';
+  }
+
+  /**
+   * โหลดคิวงานทั้งหมดครั้งเดียว แล้วค้นหาและกรองในเบราว์เซอร์ทันที
+   * quiet = โหลดเบื้องหลังโดยไม่บังหน้าจอ (ใช้ตอนมีข้อมูลเดิมแสดงอยู่แล้ว)
+   */
+  function loadQueue(opts) {
+    if (!isLoggedIn() || queueLoading) return;
+    var quiet = opts && opts.quiet;
+    queueLoading = true;
+    if (!quiet && queueCache.length === 0) App.loading(true, 'กำลังโหลดคิวงาน...');
+    setRefreshing(true);
+    App.api('apiAdminList', [token, {}]).then(function (rows) {
+      queueLoading = false;
       App.loading(false);
+      setRefreshing(false);
       queueCache = rows;
-      renderQueue(rows);
-    }).catch(handleAuthError);
+      queueLoadedAt = Date.now();
+      renderQueue();
+    }).catch(function (err) {
+      queueLoading = false;
+      handleAuthError(err);
+    });
   }
 
-  function renderQueue(rows) {
+  function dueValue(r) {
+    if (isClosed(r)) return 1e9;              // งานที่ปิดแล้วไว้ล่างสุด
+    return r.daysLeft === null ? 1e8 : r.daysLeft;
+  }
+
+  function renderQueue() {
+    var views = queueViews();
+    var q = document.getElementById('q-search').value.trim().toLowerCase();
+    var priority = document.getElementById('q-priority').value;
+    var sort = document.getElementById('q-sort').value;
+
+    var searched = queueCache.filter(function (r) {
+      if (priority && r.priority !== priority) return false;
+      if (!q) return true;
+      return [r.jobId, r.projectName, r.requesterName, r.requesterEmail, r.department,
+        r.requesterPhone, r.assignedTo].join(' ').toLowerCase().indexOf(q) >= 0;
+    });
+
+    var view = views.filter(function (v) { return v.key === queueView; })[0] || views[0];
+    document.getElementById('queue-chips').innerHTML = views.map(function (v) {
+      var n = searched.filter(v.test).length;
+      if (n === 0 && v.key !== 'active' && v.key !== 'all' && v.key !== view.key) return '';
+      return '<button type="button" class="q-chip' + (v.key === view.key ? ' on' : '') +
+        (v.alert && n > 0 ? ' alert' : '') + '" style="--c:' + v.color + '" ' +
+        'onclick="Admin.setQueueView(\'' + v.key + '\')">' + App.esc(v.label) +
+        '<span class="n">' + n + '</span></button>';
+    }).join('');
+
+    var rows = searched.filter(view.test);
+    rows.sort(function (a, b) {
+      if (sort === 'due') {
+        var d = dueValue(a) - dueValue(b);
+        if (d !== 0) return d;
+      }
+      return a.createdAt < b.createdAt ? 1 : (a.createdAt > b.createdAt ? -1 : 0);
+    });
+
+    document.getElementById('queue-meta').textContent = queueLoadedAt
+      ? 'แสดง ' + rows.length + ' จาก ' + queueCache.length + ' รายการ · อัปเดตล่าสุด ' +
+        new Date(queueLoadedAt).toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' }) + ' น.'
+      : '';
+
     var body = document.getElementById('queue-body');
     document.getElementById('queue-empty').classList.toggle('d-none', rows.length > 0);
     body.innerHTML = rows.map(function (r) {
       var dueHtml = App.shortDate(r.dueDate);
-      if (r.daysLeft !== null && r.status !== 'DELIVERED' && r.status !== 'CANCELLED') {
+      if (r.daysLeft !== null && !isClosed(r)) {
         var color = r.daysLeft < 0 ? 'var(--danger)' : (r.daysLeft <= 3 ? 'var(--warning)' : 'var(--text-light)');
-        var text = r.daysLeft < 0 ? 'เกิน ' + Math.abs(r.daysLeft) + ' วัน' : 'อีก ' + r.daysLeft + ' วัน';
+        var text = r.daysLeft < 0 ? 'เกิน ' + Math.abs(r.daysLeft) + ' วัน'
+          : (r.daysLeft === 0 ? 'วันนี้' : 'อีก ' + r.daysLeft + ' วัน');
         dueHtml += '<div style="font-size:.72rem;color:' + color + '">' + text + '</div>';
       }
-      return '<tr class="row-click" onclick="Admin.openJob(\'' + r.jobId + '\')">' +
-        '<td><strong style="color:var(--primary)">' + App.esc(r.jobId) + '</strong>' +
-          '<div style="font-size:.72rem;color:var(--text-light)">' + App.shortDate(r.createdAt) + '</div></td>' +
-        '<td><div style="font-weight:500">' + App.esc(r.projectName) + '</div>' +
-          '<div style="font-size:.76rem;color:var(--text-light)">' + App.esc(r.requesterName) +
-          ' &middot; ' + App.esc(r.department) + '</div></td>' +
-        '<td style="white-space:nowrap">' + dueHtml + '</td>' +
-        '<td><span class="badge-status" style="background:' + r.statusColor + '">' +
-          App.esc(r.statusLabel) + '</span></td>' +
-        '<td><span style="color:' + r.priorityColor + ';font-size:.82rem">' +
+      return '<tr class="row-click" onclick="Admin.openJob(\'' + App.esc(r.jobId) + '\')">' +
+        '<td class="q-id"><strong style="color:var(--primary);white-space:nowrap">' + App.esc(r.jobId) + '</strong>' +
+          '<div class="row-sub">' + App.shortDate(r.createdAt) + '</div></td>' +
+        '<td class="q-project"><div style="font-weight:500">' + App.esc(r.projectName) + '</div>' +
+          '<div class="row-sub">' + App.esc(r.requesterName) + ' &middot; ' + App.esc(r.department) + '</div></td>' +
+        '<td class="q-due" style="white-space:nowrap">' + dueHtml + '</td>' +
+        '<td class="q-status"><span class="badge-status" style="background:' + r.statusColor + '">' +
+          App.esc(r.statusLabel) + '</span>' +
+          (r.submitted ? '' : '<div class="row-sub"><i class="bi bi-hourglass me-1"></i>กำลังแนบไฟล์</div>') +
+          (r.assignedTo ? '<div class="row-sub"><i class="bi bi-person me-1"></i>' + App.esc(r.assignedTo) + '</div>' : '') +
+        '</td>' +
+        '<td class="q-pri"><span style="color:' + r.priorityColor + ';font-size:.82rem">' +
           (r.overdue ? '<i class="bi bi-exclamation-triangle-fill me-1"></i>' : '') +
           App.esc(r.priorityLabel) + '</span></td>' +
-        '<td style="font-size:.82rem">' + r.revisionCount + '/' + r.revisionLimit + '</td>' +
-        '<td class="text-end"><i class="bi bi-chevron-right text-secondary"></i></td>' +
+        '<td class="q-rev" style="font-size:.82rem"><span class="d-md-none">แก้ไข </span>' +
+          r.revisionCount + '/' + r.revisionLimit + '</td>' +
+        '<td class="q-go text-end"><i class="bi bi-chevron-right text-secondary"></i></td>' +
         '</tr>';
     }).join('');
+  }
+
+  /** อัปเดตแถวเดียวในคิวงานจากข้อมูลที่เซิร์ฟเวอร์ส่งกลับมา ไม่ต้องโหลดทั้งรายการใหม่ */
+  function patchRow(row) {
+    if (!row) return;
+    var found = false;
+    for (var i = 0; i < queueCache.length; i++) {
+      if (queueCache[i].jobId === row.jobId) { queueCache[i] = row; found = true; break; }
+    }
+    if (!found) queueCache.unshift(row);
+    if (activeTab === 'queue') renderQueue();
   }
 
   /* ------------------------------------------------------- รายละเอียดงาน */
@@ -175,19 +287,22 @@ var Admin = (function () {
     App.loading(true, 'กำลังโหลดรายละเอียด...');
     App.api('apiAdminGet', [token, jobId]).then(function (data) {
       App.loading(false);
-      currentJob = data;
-      renderJobModal(data);
+      applyJob(data);
       bootstrap.Modal.getOrCreateInstance(document.getElementById('jobModal')).show();
     }).catch(handleAuthError);
   }
 
+  /** แสดงข้อมูลงานล่าสุดในหน้าต่าง และอัปเดตแถวเดียวกันในคิวงาน */
+  function applyJob(job) {
+    if (!job) return;
+    currentJob = job;
+    renderJobModal(job);
+    patchRow(job.row);
+  }
+
   function reloadJob() {
-    if (!currentJob) return;
-    App.api('apiAdminGet', [token, currentJob.request.jobId]).then(function (data) {
-      currentJob = data;
-      renderJobModal(data);
-      loadQueue();
-    }).catch(handleAuthError);
+    if (!currentJob) return Promise.resolve();
+    return App.api('apiAdminGet', [token, currentJob.request.jobId]).then(applyJob).catch(handleAuthError);
   }
 
   function detail(label, value, isHtml) {
@@ -288,6 +403,8 @@ var Admin = (function () {
             '<span class="badge-soft" style="color:' + r.priorityColor + '">' +
               App.esc(r.priorityLabel) + '</span>' +
             '<span class="badge-soft">แก้ไข ' + r.revisionCount + '/' + r.revisionLimit + ' รอบ</span>' +
+            (r.approved ? '<span class="badge-ok" title="อนุมัติเมื่อ ' + App.esc(App.thaiDate(r.approvedAt, true)) + '">' +
+              '<i class="bi bi-hand-thumbs-up-fill me-1"></i>ผู้ขออนุมัติร่างแล้ว พร้อมส่งมอบ</span>' : '') +
             (r.assignedTo ? '<span class="badge-soft"><i class="bi bi-person-check me-1"></i>' +
               App.esc(r.assignedTo) + '</span>' : '') +
           '</div>' +
@@ -400,8 +517,12 @@ var Admin = (function () {
           '<div style="max-height:320px;overflow-y:auto">' + timelineHtml + '</div>' +
           (r.trackUrl ? '<div class="mt-3 pt-3" style="border-top:1px solid var(--border)">' +
             '<div class="detail-label">ลิงก์ติดตามของผู้ขอรับบริการ</div>' +
-            '<div class="text-truncate"><a href="' + App.esc(r.trackUrl) + '" target="_blank" ' +
-            'style="font-size:.78rem">' + App.esc(r.trackUrl) + '</a></div></div>' : '') +
+            '<div class="d-flex gap-2 align-items-center">' +
+              '<a href="' + App.esc(r.trackUrl) + '" target="_blank" class="text-truncate flex-grow-1" ' +
+              'style="font-size:.78rem">' + App.esc(r.trackUrl) + '</a>' +
+              '<button class="btn btn-sm btn-ghost py-1 flex-shrink-0" onclick="Admin.copyTrackLink(this)">' +
+              '<i class="bi bi-clipboard me-1"></i>คัดลอก</button></div>' +
+            '<div class="form-text">ส่งให้ผู้ขอทาง LINE ได้ เปิดแล้วเห็นสถานะทันทีโดยไม่ต้องกรอกอีเมล</div></div>' : '') +
         '</div>' +
       '</div>' +
     '</div>';
@@ -486,12 +607,12 @@ var Admin = (function () {
       if (toStatus === 'CANCELLED') { options.cancelReason = value; }
       App.loading(true, 'กำลังบันทึก...');
       return App.api('apiAdminChangeStatus', [token, r.jobId, toStatus, options])
-        .then(function () {
+        .then(function (res) {
           App.loading(false);
           App.toast(notify
             ? 'เปลี่ยนสถานะเรียบร้อย และส่งอีเมลแจ้งผู้ขอรับบริการแล้ว'
             : 'เปลี่ยนสถานะเรียบร้อย (ไม่ได้ส่งอีเมลแจ้งผู้ขอ)', 'ok');
-          reloadJob();
+          applyJob(res.job);
         });
     }).catch(handleAuthError);
   }
@@ -506,11 +627,11 @@ var Admin = (function () {
     }).then(function (url) {
       if (!url) return;
       App.loading(true, 'กำลังบันทึกลิงก์...');
-      return App.api('apiAdminSetDraftUrl', [token, currentJob.request.jobId, url]).then(function () {
+      return App.api('apiAdminSetDraftUrl', [token, currentJob.request.jobId, url]).then(function (res) {
         App.loading(false);
         App.toast('บันทึกลิงก์ร่างเรียบร้อย ' +
           'เมื่อพร้อมให้ตรวจ กดปุ่ม "รอตรวจร่าง" เพื่อแจ้งผู้ขอรับบริการ', 'ok');
-        reloadJob();
+        applyJob(res.job);
       });
     }).catch(handleAuthError);
   }
@@ -524,9 +645,11 @@ var Admin = (function () {
       }
     }).then(function (name) {
       if (name === null) return;
-      return App.api('apiAdminAssign', [token, currentJob.request.jobId, name]).then(function () {
+      App.loading(true, 'กำลังบันทึก...');
+      return App.api('apiAdminAssign', [token, currentJob.request.jobId, name]).then(function (res) {
+        App.loading(false);
         App.toast('บันทึกผู้รับผิดชอบเรียบร้อย', 'ok');
-        reloadJob();
+        applyJob(res.job);
       });
     }).catch(handleAuthError);
   }
@@ -538,9 +661,11 @@ var Admin = (function () {
       field: { label: 'ข้อความ', required: true, type: 'textarea', rows: 4 }
     }).then(function (text) {
       if (!text) return;
-      return App.api('apiAdminNote', [token, currentJob.request.jobId, text]).then(function () {
+      App.loading(true, 'กำลังบันทึก...');
+      return App.api('apiAdminNote', [token, currentJob.request.jobId, text]).then(function (res) {
+        App.loading(false);
         App.toast('บันทึกเรียบร้อย', 'ok');
-        reloadJob();
+        applyJob(res.job);
       });
     }).catch(handleAuthError);
   }
@@ -555,9 +680,11 @@ var Admin = (function () {
       }
     }).then(function (value) {
       if (!value) return;
-      return App.api('apiAdminSetRevisionLimit', [token, currentJob.request.jobId, value]).then(function () {
+      App.loading(true, 'กำลังบันทึก...');
+      return App.api('apiAdminSetRevisionLimit', [token, currentJob.request.jobId, value]).then(function (res) {
+        App.loading(false);
         App.toast('ปรับจำนวนรอบแก้ไขเรียบร้อย', 'ok');
-        reloadJob();
+        applyJob(res.job);
       });
     }).catch(handleAuthError);
   }
@@ -568,7 +695,7 @@ var Admin = (function () {
       App.loading(false);
       App.toast('สรุป Design Brief ใหม่เรียบร้อย (' +
         (res.source === 'AI' ? 'ด้วย AI' : 'อัตโนมัติ') + ')', 'ok');
-      reloadJob();
+      applyJob(res.job);
     }).catch(handleAuthError);
   }
 
@@ -576,48 +703,68 @@ var Admin = (function () {
     if (!fileList || fileList.length === 0) return;
     var cfg = App.getCfg();
     var maxBytes = cfg.settings.maxFileMB * 1024 * 1024;
+    var allowed = cfg.settings.allowedFileTypes.toLowerCase().split(',').map(function (x) { return x.trim(); });
     var queue = [];
     for (var i = 0; i < fileList.length; i++) {
+      var name = fileList[i].name;
+      var ext = name.lastIndexOf('.') >= 0 ? name.substring(name.lastIndexOf('.') + 1).toLowerCase() : '';
+      if (allowed.indexOf(ext) < 0) {
+        App.toast('ไฟล์ "' + name + '" เป็นชนิดที่ระบบไม่รองรับ (แก้ได้ที่ ตั้งค่า > นามสกุลไฟล์ที่อนุญาต)', 'err');
+        continue;
+      }
       if (fileList[i].size > maxBytes) {
-        App.toast('ไฟล์ "' + fileList[i].name + '" เกิน ' + cfg.settings.maxFileMB + ' MB', 'err');
+        App.toast('ไฟล์ "' + name + '" เกิน ' + cfg.settings.maxFileMB + ' MB', 'err');
         continue;
       }
       queue.push(fileList[i]);
     }
+    var input = document.getElementById('jm-final-file');
+    if (input) input.value = '';
     if (queue.length === 0) return;
 
     var jobId = currentJob.request.jobId;
-    function step(index) {
-      if (index >= queue.length) {
-        App.loading(false);
-        App.toast('อัปโหลดไฟล์ส่งมอบเรียบร้อย', 'ok');
-        reloadJob();
-        return;
-      }
-      var file = queue[index];
-      App.loading(true, 'กำลังอัปโหลด ' + (index + 1) + '/' + queue.length + ' ...');
-      var reader = new FileReader();
-      reader.onload = function (e) {
-        var result = String(e.target.result);
-        var comma = result.indexOf(',');
-        App.api('apiAdminUploadFile', [token, jobId, {
-          fileName: file.name,
-          mimeType: file.type || 'application/octet-stream',
-          dataB64: comma >= 0 ? result.substring(comma + 1) : result
-        }, 'final']).then(function () {
-          step(index + 1);
-        }).catch(function (err) {
-          App.toast('อัปโหลด "' + file.name + '" ไม่สำเร็จ: ' + err.message, 'err');
-          step(index + 1);
-        });
-      };
-      reader.onerror = function () {
-        App.toast('อ่านไฟล์ "' + file.name + '" ไม่สำเร็จ', 'err');
-        step(index + 1);
-      };
-      reader.readAsDataURL(file);
+    var next = 0;
+    var done = 0;
+    var failed = 0;
+    App.loading(true, 'กำลังอัปโหลด 0/' + queue.length + ' ...');
+
+    function readAsBase64(file) {
+      return new Promise(function (resolve, reject) {
+        var reader = new FileReader();
+        reader.onload = function (e) {
+          var result = String(e.target.result);
+          var comma = result.indexOf(',');
+          resolve(comma >= 0 ? result.substring(comma + 1) : result);
+        };
+        reader.onerror = function () { reject(new Error('อ่านไฟล์ไม่สำเร็จ')); };
+        reader.readAsDataURL(file);
+      });
     }
-    step(0);
+
+    function worker() {
+      if (next >= queue.length) return Promise.resolve();
+      var file = queue[next++];
+      return readAsBase64(file).then(function (data) {
+        return App.api('apiAdminUploadFile', [token, jobId, {
+          fileName: file.name, mimeType: file.type || 'application/octet-stream', dataB64: data
+        }, 'final']);
+      }).catch(function (err) {
+        failed++;
+        App.toast('อัปโหลด "' + file.name + '" ไม่สำเร็จ: ' + err.message, 'err');
+      }).then(function () {
+        done++;
+        App.loading(true, 'กำลังอัปโหลด ' + done + '/' + queue.length + ' ...');
+        return worker();
+      });
+    }
+
+    Promise.all([worker(), worker()]).then(function () {
+      App.loading(false);
+      if (failed < queue.length) {
+        App.toast('อัปโหลดไฟล์ส่งมอบเรียบร้อย ' + (queue.length - failed) + ' ไฟล์', 'ok');
+      }
+      reloadJob();
+    });
   }
 
   function deleteFile(attachmentId) {
@@ -627,20 +774,52 @@ var Admin = (function () {
       okLabel: 'ลบไฟล์'
     }).then(function (ok) {
       if (!ok) return;
-      return App.api('apiAdminDeleteFile', [token, attachmentId]).then(function () {
+      App.loading(true, 'กำลังลบไฟล์...');
+      return App.api('apiAdminDeleteFile', [token, attachmentId]).then(function (res) {
+        App.loading(false);
         App.toast('ลบไฟล์เรียบร้อย', 'ok');
-        reloadJob();
+        if (res.job) applyJob(res.job); else reloadJob();
       });
     }).catch(handleAuthError);
   }
 
   /* ------------------------------------------------------------ แดชบอร์ด */
 
+  var dashPeriod = 'fy';
+
+  /** ช่วงเวลาสำหรับแดชบอร์ด ปีงบประมาณของไทยเริ่ม 1 ตุลาคม */
+  function dashboardPeriods() {
+    var now = new Date();
+    var fyStart = now.getMonth() >= 9 ? now.getFullYear() : now.getFullYear() - 1; // ค.ศ. ของ 1 ต.ค.
+    function ymd(d) {
+      return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
+    }
+    function fy(startYear) {
+      return { from: startYear + '-10-01', to: (startYear + 1) + '-09-30' };
+    }
+    var d30 = new Date(now.getTime() - 29 * 86400000);
+    return [
+      { key: 'fy', label: 'ปีงบประมาณ ' + (fyStart + 544), range: fy(fyStart) },
+      { key: 'fy-1', label: 'ปีงบประมาณ ' + (fyStart + 543), range: fy(fyStart - 1) },
+      { key: 'year', label: 'ปี พ.ศ. ' + (now.getFullYear() + 543),
+        range: { from: now.getFullYear() + '-01-01', to: now.getFullYear() + '-12-31' } },
+      { key: '30d', label: '30 วันล่าสุด', range: { from: ymd(d30), to: ymd(now) } },
+      { key: 'all', label: 'ทั้งหมด', range: {} }
+    ];
+  }
+
+  function setDashPeriod(key) {
+    dashPeriod = key;
+    loadDashboard();
+  }
+
   function loadDashboard() {
+    var period = dashboardPeriods().filter(function (p) { return p.key === dashPeriod; })[0] ||
+      dashboardPeriods()[0];
     App.loading(true, 'กำลังคำนวณสถิติ...');
-    App.api('apiAdminStats', [token, {}]).then(function (s) {
+    App.api('apiAdminStats', [token, period.range]).then(function (s) {
       App.loading(false);
-      renderDashboard(s);
+      renderDashboard(s, period);
     }).catch(handleAuthError);
   }
 
@@ -670,8 +849,17 @@ var Admin = (function () {
       }).join('') + '</div>';
   }
 
-  function renderDashboard(s) {
+  function renderDashboard(s, period) {
     var t = s.totals;
+    var periodBar = '<div class="d-flex flex-wrap gap-2 align-items-center mb-3">' +
+      '<span style="font-size:.82rem;color:var(--text-light)"><i class="bi bi-calendar3 me-1"></i>ช่วงเวลา</span>' +
+      dashboardPeriods().map(function (p) {
+        return '<button type="button" class="q-chip' + (p.key === period.key ? ' on' : '') + '" ' +
+          'onclick="Admin.setDashPeriod(\'' + p.key + '\')">' + App.esc(p.label) + '</button>';
+      }).join('') +
+      (period.range.from ? '<span style="font-size:.76rem;color:var(--text-light)">' +
+        App.thaiDate(period.range.from) + ' – ' + App.thaiDate(period.range.to) + '</span>' : '') +
+      '</div>';
     var monthMax = s.byMonth.reduce(function (m, x) { return Math.max(m, x.received); }, 0) || 1;
     var monthChart = s.byMonth.length === 0
       ? '<div class="empty-state py-4"><i class="bi bi-calendar3"></i>' +
@@ -696,7 +884,7 @@ var Admin = (function () {
         '<span><span style="display:inline-block;width:10px;height:10px;background:var(--primary);' +
         'border-radius:3px"></span> ส่งมอบแล้ว</span></div>';
 
-    document.getElementById('admin-dashboard').innerHTML =
+    document.getElementById('admin-dashboard').innerHTML = periodBar +
       '<div class="row g-3 mb-3">' +
         tile(t.all, 'คำขอทั้งหมด', 'bi-inbox-fill', 'var(--primary)', '#fff7ed') +
         tile(t.active, 'อยู่ระหว่างดำเนินการ', 'bi-hourglass-split', 'var(--warning)', '#fffbeb') +
@@ -731,56 +919,110 @@ var Admin = (function () {
 
   /* ---------------------------------------------------------- คลังผลงาน */
 
+  var assetsCache = [];
+
   function loadAssets() {
     App.loading(true, 'กำลังโหลดคลังผลงาน...');
     App.api('apiAdminAssets', [token, {}]).then(function (rows) {
       App.loading(false);
-      var html = rows.length === 0
-        ? '<div class="card-soft empty-state"><i class="bi bi-collection"></i>' +
-          '<p class="mt-3 mb-0">ยังไม่มีผลงานที่ส่งมอบแล้ว</p></div>'
-        : '<div class="row g-3">' + rows.map(function (a) {
-            return '<div class="col-md-6 col-lg-4"><div class="card-soft p-3 h-100">' +
-              '<div class="d-flex justify-content-between align-items-start mb-2">' +
-                '<span class="badge-soft">' + App.esc(a.jobId) + '</span>' +
-                '<span style="font-size:.72rem;color:var(--text-light)">' +
-                  App.shortDate(a.deliveredAt) + '</span></div>' +
-              '<div style="font-weight:500;font-size:.92rem;margin-bottom:.2rem">' +
-                App.esc(a.projectName) + '</div>' +
-              '<div style="font-size:.78rem;color:var(--text-light);margin-bottom:.6rem">' +
-                App.esc(a.department) + '</div>' +
-              '<div style="font-size:.78rem;color:var(--text-light);margin-bottom:.6rem">' +
-                '<i class="bi bi-images me-1"></i>' + App.esc(a.media) + '</div>' +
-              a.files.map(function (f) {
-                return '<a href="' + App.esc(f.fileUrl) + '" target="_blank" ' +
-                  'class="d-block text-truncate" style="font-size:.8rem">' +
-                  '<i class="bi bi-file-earmark me-1"></i>' + App.esc(f.fileName) + '</a>';
-              }).join('') +
-              '<a href="' + App.esc(a.folderUrl) + '" target="_blank" ' +
-                'class="btn btn-sm btn-ghost w-100 mt-2 py-1">เปิดโฟลเดอร์</a>' +
-              '</div></div>';
-          }).join('') + '</div>';
-      document.getElementById('admin-assets').innerHTML = html;
+      assetsCache = rows;
+      document.getElementById('admin-assets').innerHTML =
+        '<div class="card-soft p-3 mb-3"><div class="position-relative">' +
+          '<i class="bi bi-search search-ico"></i>' +
+          '<input type="search" class="form-control form-control-sm ps-search" id="a-search" ' +
+          'placeholder="ค้นหาจากเลขที่คำขอ ชื่อโครงการ หน่วยงาน หรือประเภทสื่อ" oninput="Admin.renderAssets()">' +
+        '</div></div><div id="assets-list"></div>';
+      renderAssets();
     }).catch(handleAuthError);
+  }
+
+  function renderAssets() {
+    var box = document.getElementById('a-search');
+    var q = box ? box.value.trim().toLowerCase() : '';
+    var rows = assetsCache.filter(function (a) {
+      return !q || [a.jobId, a.projectName, a.department, a.media].join(' ').toLowerCase().indexOf(q) >= 0;
+    });
+    var html = rows.length === 0
+      ? '<div class="card-soft empty-state"><i class="bi bi-collection"></i>' +
+        '<p class="mt-3 mb-0">' + (assetsCache.length === 0 ? 'ยังไม่มีผลงานที่ส่งมอบแล้ว' : 'ไม่พบผลงานที่ตรงกับคำค้น') +
+        '</p></div>'
+      : '<div class="row g-3">' + rows.map(function (a) {
+          return '<div class="col-md-6 col-lg-4"><div class="card-soft p-3 h-100">' +
+            '<div class="d-flex justify-content-between align-items-start mb-2">' +
+              '<span class="badge-soft">' + App.esc(a.jobId) + '</span>' +
+              '<span style="font-size:.72rem;color:var(--text-light)">' +
+                App.shortDate(a.deliveredAt) + '</span></div>' +
+            '<div style="font-weight:500;font-size:.92rem;margin-bottom:.2rem">' +
+              App.esc(a.projectName) + '</div>' +
+            '<div style="font-size:.78rem;color:var(--text-light);margin-bottom:.6rem">' +
+              App.esc(a.department) + '</div>' +
+            '<div style="font-size:.78rem;color:var(--text-light);margin-bottom:.6rem">' +
+              '<i class="bi bi-images me-1"></i>' + App.esc(a.media) + '</div>' +
+            a.files.map(function (f) {
+              return '<a href="' + App.esc(f.fileUrl) + '" target="_blank" ' +
+                'class="d-block text-truncate" style="font-size:.8rem">' +
+                '<i class="bi bi-file-earmark me-1"></i>' + App.esc(f.fileName) + '</a>';
+            }).join('') +
+            '<a href="' + App.esc(a.folderUrl) + '" target="_blank" ' +
+              'class="btn btn-sm btn-ghost w-100 mt-2 py-1">เปิดโฟลเดอร์</a>' +
+            '</div></div>';
+        }).join('') + '</div>';
+    document.getElementById('assets-list').innerHTML = html;
   }
 
   /* -------------------------------------------------------------- ตั้งค่า */
 
-  var SETTING_LABELS = {
-    revisionLimit: ['จำนวนรอบแก้ไขสูงสุด', 'จำนวนรอบที่ผู้ขอรับบริการแจ้งแก้ไขได้ต่อหนึ่งคำขอ'],
-    minLeadDays: ['ระยะเวลายื่นล่วงหน้าขั้นต่ำ (วัน)', 'หากน้อยกว่านี้ ผู้ขอต้องระบุเหตุผลความเร่งด่วน'],
-    slaFirstDraftDays: ['ระยะเวลาส่งร่างแรก (วัน)', 'ใช้แสดงในเงื่อนไขการให้บริการ'],
-    notifyEmails: ['อีเมลเจ้าหน้าที่ที่รับแจ้งเตือน', 'คั่นหลายอีเมลด้วยเครื่องหมายจุลภาค'],
-    notifyOwnerAlways: ['แจ้งเตือนอีเมลเจ้าของระบบเสมอ', 'ส่งถึงบัญชีที่ deploy เว็บแอปทุกครั้ง แม้ไม่ได้อยู่ในรายชื่อด้านบน'],
-    fromName: ['ชื่อผู้ส่งอีเมล', ''],
-    replyTo: ['อีเมลสำหรับตอบกลับ', ''],
-    maxFileMB: ['ขนาดไฟล์สูงสุดต่อไฟล์ (MB)', ''],
-    maxFiles: ['จำนวนไฟล์แนบสูงสุด', ''],
-    allowedFileTypes: ['นามสกุลไฟล์ที่อนุญาต', 'คั่นด้วยจุลภาค'],
-    aiEnabled: ['เปิดใช้ AI สรุป Design Brief', 'true หรือ false'],
-    aiModel: ['โมเดล AI ที่ใช้', ''],
-    publicFormOpen: ['เปิดรับคำขอ', 'true หรือ false'],
-    closedMessage: ['ข้อความเมื่อปิดรับคำขอ', '']
+  // ตั้งค่าแบ่งเป็นหมวด และใช้ช่องกรอกตามชนิดข้อมูล (สวิตช์ ตัวเลข ข้อความ)
+  var SETTING_META = {
+    publicFormOpen: { label: 'เปิดรับคำขอ', hint: 'ปิดชั่วคราวได้ เช่น ช่วงปิดภาคเรียนหรือคิวงานเต็ม', type: 'bool' },
+    closedMessage: { label: 'ข้อความเมื่อปิดรับคำขอ', type: 'textarea' },
+    minLeadDays: { label: 'ยื่นล่วงหน้าอย่างน้อย (วัน)', hint: 'น้อยกว่านี้ ผู้ขอต้องระบุเหตุผลความเร่งด่วน', type: 'number', min: 0, max: 90 },
+    slaFirstDraftDays: { label: 'ส่งร่างแรกภายใน (วันทำการ)', hint: 'แสดงในเงื่อนไขการให้บริการ', type: 'number', min: 1, max: 90 },
+    revisionLimit: { label: 'จำนวนรอบแก้ไขสูงสุด', hint: 'ใช้กับคำขอใหม่ งานเดิมปรับรายใบได้ในหน้ารายละเอียดงาน', type: 'number', min: 1, max: 20 },
+    maxFileMB: { label: 'ขนาดไฟล์สูงสุดต่อไฟล์ (MB)', type: 'number', min: 1, max: 25 },
+    maxFiles: { label: 'จำนวนไฟล์แนบสูงสุด', type: 'number', min: 1, max: 20 },
+    allowedFileTypes: { label: 'นามสกุลไฟล์ที่อนุญาต', hint: 'คั่นด้วยจุลภาค เช่น pdf,jpg,png', type: 'text', wide: true },
+    notifyEmails: { label: 'อีเมลเจ้าหน้าที่ที่รับแจ้งเตือน', hint: 'คั่นหลายอีเมลด้วยจุลภาค', type: 'text', wide: true },
+    notifyOwnerAlways: { label: 'แจ้งเตือนอีเมลเจ้าของระบบเสมอ', hint: 'ส่งถึงบัญชีที่ deploy เว็บแอปทุกครั้ง แม้ไม่อยู่ในรายชื่อด้านบน', type: 'bool' },
+    fromName: { label: 'ชื่อผู้ส่งอีเมล', type: 'text' },
+    replyTo: { label: 'อีเมลสำหรับตอบกลับ', hint: 'เมื่อผู้ขอกดตอบกลับอีเมลจากระบบ', type: 'text' },
+    aiEnabled: { label: 'ใช้ AI สรุป Design Brief', hint: 'ปิดแล้วระบบสรุปด้วยสูตรสำเร็จแทน', type: 'bool' },
+    aiModel: { label: 'โมเดล AI ที่ใช้', type: 'text' }
   };
+  var SETTING_GROUPS = [
+    { title: 'การรับคำขอ', icon: 'bi-inbox', keys: ['publicFormOpen', 'closedMessage', 'minLeadDays', 'slaFirstDraftDays', 'revisionLimit'] },
+    { title: 'ไฟล์แนบ', icon: 'bi-paperclip', keys: ['maxFileMB', 'maxFiles', 'allowedFileTypes'] },
+    { title: 'อีเมลแจ้งเตือน', icon: 'bi-envelope', keys: ['notifyEmails', 'notifyOwnerAlways', 'fromName', 'replyTo'] },
+    { title: 'AI สรุป Design Brief', icon: 'bi-cpu', keys: ['aiEnabled', 'aiModel'] }
+  ];
+
+  function settingInput(key, value) {
+    var m = SETTING_META[key] || { label: key, type: 'text' };
+    var id = 'set-' + key;
+    var input;
+    if (m.type === 'bool') {
+      return '<div class="col-md-6"><div class="form-check form-switch mt-md-4">' +
+        '<input class="form-check-input" type="checkbox" role="switch" id="' + id + '" data-key="' + key + '"' +
+        (value === 'true' ? ' checked' : '') + '>' +
+        '<label class="form-check-label" for="' + id + '">' + App.esc(m.label) + '</label>' +
+        (m.hint ? '<div class="form-text">' + App.esc(m.hint) + '</div>' : '') + '</div></div>';
+    }
+    if (m.type === 'textarea') {
+      input = '<textarea class="form-control form-control-sm" rows="2" id="' + id + '" data-key="' + key + '">' +
+        App.esc(value) + '</textarea>';
+    } else if (m.type === 'number') {
+      input = '<input type="number" inputmode="numeric" class="form-control form-control-sm" id="' + id +
+        '" data-key="' + key + '" min="' + m.min + '" max="' + m.max + '" step="1" value="' + App.esc(value) + '">';
+    } else {
+      input = '<input type="text" class="form-control form-control-sm" id="' + id + '" data-key="' + key +
+        '" value="' + App.esc(value) + '">';
+    }
+    return '<div class="' + (m.wide || m.type === 'textarea' ? 'col-12' : 'col-md-6') + '">' +
+      '<label class="form-label" for="' + id + '">' + App.esc(m.label) + '</label>' + input +
+      (m.hint ? '<div class="form-text">' + App.esc(m.hint) + '</div>' : '') +
+      (m.type === 'number' ? '<div class="form-text">ใส่ได้ ' + m.min + ' ถึง ' + m.max + '</div>' : '') +
+      '</div>';
+  }
 
   function loadSettings() {
     App.loading(true, 'กำลังโหลดการตั้งค่า...');
@@ -792,7 +1034,7 @@ var Admin = (function () {
       renderSettings(results[0], results[1]);
     }).catch(function (err) {
       App.loading(false);
-      if (/ผู้ดูแลระบบ/.test(err.message)) {
+      if (err.code === 'FORBIDDEN') {
         document.getElementById('admin-settings').innerHTML =
           '<div class="card-soft empty-state"><i class="bi bi-shield-lock"></i>' +
           '<p class="mt-3 mb-0">เฉพาะผู้ดูแลระบบเท่านั้นที่เข้าถึงหน้าตั้งค่าได้</p></div>';
@@ -803,18 +1045,21 @@ var Admin = (function () {
   }
 
   function renderSettings(data, users) {
-    var fields = data.settings.map(function (s) {
-      var meta = SETTING_LABELS[s.key] || [s.key, ''];
-      var isBool = s.value === 'true' || s.value === 'false';
-      var input = isBool
-        ? '<select class="form-select form-select-sm" data-key="' + s.key + '">' +
-          '<option value="true"' + (s.value === 'true' ? ' selected' : '') + '>เปิด</option>' +
-          '<option value="false"' + (s.value === 'false' ? ' selected' : '') + '>ปิด</option></select>'
-        : '<input type="text" class="form-control form-control-sm" data-key="' + s.key +
-          '" value="' + App.esc(s.value) + '">';
-      return '<div class="col-md-6"><label class="form-label">' + App.esc(meta[0]) + '</label>' +
-        input + (meta[1] ? '<div class="form-text">' + App.esc(meta[1]) + '</div>' : '') + '</div>';
-    }).join('');
+    usersCache = users || [];
+    var values = {};
+    data.settings.forEach(function (s) { values[s.key] = s.value; });
+    var used = {};
+    var fields = SETTING_GROUPS.map(function (g) {
+      return '<div class="col-12 set-group"><i class="bi ' + g.icon + ' me-1"></i>' + App.esc(g.title) + '</div>' +
+        g.keys.filter(function (k) { return values.hasOwnProperty(k); }).map(function (k) {
+          used[k] = true;
+          return settingInput(k, values[k]);
+        }).join('');
+    }).join('') +
+      // ค่าตั้งค่าที่เพิ่มในอนาคตแต่ยังไม่ได้จัดหมวด จะไม่หายไปจากหน้าจอ
+      data.settings.filter(function (s) { return !used[s.key]; }).map(function (s) {
+        return settingInput(s.key, s.value);
+      }).join('');
 
     var userRows = users.map(function (u) {
       return '<tr><td>' + App.esc(u.name) + '</td><td>' + App.esc(u.email) + '</td>' +
@@ -937,12 +1182,16 @@ var Admin = (function () {
     var inputs = document.querySelectorAll('#settings-fields [data-key]');
     var patch = {};
     for (var i = 0; i < inputs.length; i++) {
-      patch[inputs[i].getAttribute('data-key')] = inputs[i].value;
+      var el = inputs[i];
+      patch[el.getAttribute('data-key')] = el.type === 'checkbox' ? (el.checked ? 'true' : 'false') : el.value;
     }
     App.loading(true, 'กำลังบันทึก...');
-    App.api('apiAdminSaveSettings', [token, patch]).then(function () {
+    App.api('apiAdminSaveSettings', [token, patch]).then(function (res) {
       App.loading(false);
-      App.toast('บันทึกการตั้งค่าเรียบร้อย (รีเฟรชหน้าเพื่อให้มีผลกับแบบฟอร์ม)', 'ok');
+      App.applySettings(res.settings);
+      App.toast(res.saved > 0
+        ? 'บันทึกการตั้งค่า ' + res.saved + ' รายการเรียบร้อย มีผลกับแบบฟอร์มทันที'
+        : 'ไม่มีค่าที่เปลี่ยนแปลง', 'ok');
     }).catch(handleAuthError);
   }
 
@@ -973,7 +1222,8 @@ var Admin = (function () {
         currentJob = null;
         App.toast('ลบคำขอ ' + res.jobId + ' เรียบร้อย ' +
           '(ชิ้นงาน ' + res.deliverables + ' รายการ, ไฟล์ ' + res.attachments + ' ไฟล์)', 'ok');
-        loadQueue();
+        queueCache = queueCache.filter(function (row) { return row.jobId !== res.jobId; });
+        renderQueue();
       });
     }).catch(handleAuthError);
   }
@@ -1003,23 +1253,41 @@ var Admin = (function () {
         App.toast('ล้างข้อมูลเรียบร้อย ลบคำขอ ' + res.requests + ' รายการ ' +
           'และย้ายโฟลเดอร์ ' + res.foldersTrashed + ' โฟลเดอร์ลงถังขยะ ' +
           'เลขที่คำขอถัดไปจะเริ่มที่ 0001', 'ok');
+        queueCache = [];
+        queueLoadedAt = 0;
         loadSettings();
       });
     }).catch(handleAuthError);
   }
 
   function copyText(btn, text) {
-    var box = document.createElement('textarea');
-    box.value = text;
-    box.style.position = 'fixed';
-    box.style.opacity = '0';
-    document.body.appendChild(box);
-    box.select();
-    try { document.execCommand('copy'); } catch (e) { /* เบราว์เซอร์ไม่รองรับ */ }
-    document.body.removeChild(box);
+    function fallback() {
+      var box = document.createElement('textarea');
+      box.value = text;
+      box.style.position = 'fixed';
+      box.style.opacity = '0';
+      document.body.appendChild(box);
+      box.select();
+      try { document.execCommand('copy'); } catch (e) { /* เบราว์เซอร์ไม่รองรับ */ }
+      document.body.removeChild(box);
+    }
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).catch(fallback);
+      } else {
+        fallback();
+      }
+    } catch (e) {
+      fallback();
+    }
+    if (!btn) return;
     var original = btn.innerHTML;
-    btn.innerHTML = '<i class="bi bi-check-lg"></i>';
+    btn.innerHTML = '<i class="bi bi-check-lg"></i> คัดลอกแล้ว';
     setTimeout(function () { btn.innerHTML = original; }, 1500);
+  }
+
+  function copyTrackLink(btn) {
+    if (currentJob && currentJob.request.trackUrl) copyText(btn, currentJob.request.trackUrl);
   }
 
   function testEmail() {
@@ -1057,21 +1325,28 @@ var Admin = (function () {
 
   function editUser(email) {
     var isNew = !email;
+    var u = usersCache.filter(function (x) { return x.email === email; })[0] ||
+      { email: email, name: '', role: 'staff', active: true };
+    var isSelf = !isNew && user && u.email === user.email;
     App.prompt({
       title: isNew ? 'เพิ่มบัญชีเจ้าหน้าที่' : 'แก้ไขบัญชี ' + email,
       html:
         '<div class="mb-2"><label class="form-label">อีเมล<span class="req">*</span></label>' +
-        '<input type="email" class="form-control" id="u-email" value="' + App.esc(email) + '"' +
+        '<input type="email" class="form-control" id="u-email" value="' + App.esc(u.email) + '"' +
         (isNew ? '' : ' readonly') + '></div>' +
         '<div class="mb-2"><label class="form-label">ชื่อ-นามสกุล<span class="req">*</span></label>' +
-        '<input type="text" class="form-control" id="u-name"></div>' +
+        '<input type="text" class="form-control" id="u-name" value="' + App.esc(u.name) + '"></div>' +
         '<div class="mb-2"><label class="form-label">สิทธิ์</label>' +
-        '<select class="form-select" id="u-role"><option value="staff">เจ้าหน้าที่</option>' +
-        '<option value="admin">ผู้ดูแลระบบ</option></select></div>' +
+        '<select class="form-select" id="u-role"' + (isSelf ? ' disabled' : '') + '>' +
+        '<option value="staff"' + (u.role !== 'admin' ? ' selected' : '') + '>เจ้าหน้าที่ (จัดการคิวงาน)</option>' +
+        '<option value="admin"' + (u.role === 'admin' ? ' selected' : '') + '>ผู้ดูแลระบบ (จัดการคิวงาน + ตั้งค่าและบัญชี)</option>' +
+        '</select>' + (isSelf ? '<div class="form-text">เปลี่ยนสิทธิ์ของบัญชีตนเองไม่ได้</div>' : '') + '</div>' +
         '<div class="mb-2"><label class="form-label">รหัสผ่าน' +
         (isNew ? '<span class="req">*</span>' : ' (เว้นว่างหากไม่เปลี่ยน)') + '</label>' +
-        '<input type="password" class="form-control" id="u-password" autocomplete="new-password"></div>' +
-        '<div class="form-check"><input class="form-check-input" type="checkbox" id="u-active" checked>' +
+        '<input type="password" class="form-control" id="u-password" autocomplete="new-password" ' +
+        'placeholder="อย่างน้อย 8 ตัวอักษร"></div>' +
+        '<div class="form-check"><input class="form-check-input" type="checkbox" id="u-active"' +
+        (u.active ? ' checked' : '') + (isSelf ? ' disabled' : '') + '>' +
         '<label class="form-check-label" for="u-active">เปิดใช้งานบัญชีนี้</label></div>',
       okLabel: 'บันทึก'
     }).then(function (ok) {
@@ -1115,41 +1390,67 @@ var Admin = (function () {
 
   /* -------------------------------------------------------------- ส่งออก */
 
+  /**
+   * ส่งออกเฉพาะรายการที่แสดงอยู่ในคิวงานตอนนี้ (ตามปุ่มสถานะ การค้นหา และตัวกรอง)
+   * ไฟล์มี BOM เพื่อให้ Excel อ่านภาษาไทยได้ และกันค่าที่ขึ้นต้นด้วย = + - @ ถูกตีความเป็นสูตร
+   */
   function exportCsv() {
-    var filter = {
-      q: document.getElementById('q-search').value.trim(),
-      status: document.getElementById('q-status').value,
-      priority: document.getElementById('q-priority').value
-    };
+    var visible = {};
+    var ids = Array.prototype.map.call(document.querySelectorAll('#queue-body tr'), function (tr) {
+      var m = (tr.getAttribute('onclick') || '').match(/openJob\('([^']+)'\)/);
+      return m ? m[1] : '';
+    }).filter(function (x) { return !!x; });
+    ids.forEach(function (id) { visible[id] = true; });
+    if (ids.length === 0) { App.toast('ไม่มีรายการให้ส่งออก', 'err'); return; }
+
     App.loading(true, 'กำลังเตรียมข้อมูล...');
-    App.api('apiAdminExport', [token, filter]).then(function (data) {
+    App.api('apiAdminExport', [token, {}]).then(function (data) {
       App.loading(false);
-      var lines = [data.header].concat(data.rows).map(function (row) {
+      var rows = data.rows.filter(function (r) { return visible[r[0]]; });
+      lastCsv = [data.header].concat(rows).map(function (row) {
         return row.map(function (cell) {
           var v = String(cell === null || cell === undefined ? '' : cell);
+          if (/^[=+\-@]/.test(v)) v = "'" + v;
           return '"' + v.replace(/"/g, '""') + '"';
         }).join(',');
-      });
-      var csv = lines.join('\n');
+      }).join('\r\n');
       App.prompt({
-        title: 'ส่งออกข้อมูล (' + data.rows.length + ' รายการ)',
-        html: '<div class="form-text mb-2">คัดลอกข้อความด้านล่างไปวางในโปรแกรม Excel หรือ Google Sheets ' +
-          'โดยเลือก Paste special แล้วแยกด้วยเครื่องหมายจุลภาค</div>' +
-          '<textarea class="form-control" rows="10" id="csv-out" style="font-size:.75rem;' +
-          'font-family:monospace">' + App.esc(csv) + '</textarea>',
-        okLabel: 'คัดลอกทั้งหมด'
+        title: 'ส่งออกข้อมูล (' + rows.length + ' รายการ)',
+        html: '<p style="font-size:.88rem">ส่งออกรายการที่แสดงอยู่ในคิวงานตอนนี้ ' +
+          'เปิดด้วย Excel หรือ Google Sheets ได้ทันที</p>' +
+          '<button type="button" class="btn btn-brand w-100 justify-content-center mb-2" ' +
+          'onclick="Admin.downloadCsv()"><i class="bi bi-file-earmark-spreadsheet"></i>ดาวน์โหลดไฟล์ CSV</button>' +
+          '<div class="form-text">ถ้าเบราว์เซอร์ไม่ดาวน์โหลด ให้กด "คัดลอกข้อมูล" แล้ววางใน Google Sheets</div>',
+        okLabel: 'คัดลอกข้อมูล'
       }).then(function (ok) {
         if (!ok) return;
-        var box = document.getElementById('csv-out');
-        if (box) { box.select(); document.execCommand('copy'); }
+        copyText(null, lastCsv);
         App.toast('คัดลอกข้อมูลแล้ว', 'ok');
       });
     }).catch(handleAuthError);
   }
 
+  function downloadCsv() {
+    if (!lastCsv) return;
+    try {
+      var blob = new Blob(['\ufeff' + lastCsv], { type: 'text/csv;charset=utf-8' });
+      var a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'design-requests-' + App.todayStr(0) + '.csv';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+      App.toast('ดาวน์โหลดไฟล์แล้ว', 'ok');
+    } catch (e) {
+      App.toast('เบราว์เซอร์ไม่อนุญาตให้ดาวน์โหลด กรุณาใช้ปุ่มคัดลอกข้อมูลแทน', 'err');
+    }
+  }
+
   return {
     init: init, isLoggedIn: isLoggedIn, login: login, logout: logout, onEnter: onEnter,
-    loadQueue: loadQueue, debouncedLoadQueue: debouncedLoadQueue, openJob: openJob,
+    setPendingJob: setPendingJob, loadQueue: loadQueue, renderQueue: renderQueue,
+    setQueueView: setQueueView, openJob: openJob, copyTrackLink: copyTrackLink,
+    downloadCsv: downloadCsv, setDashPeriod: setDashPeriod, renderAssets: renderAssets,
     changeStatus: changeStatus, setDraftUrl: setDraftUrl, assign: assign, addNote: addNote,
     setRevisionLimit: setRevisionLimit, regenerateBrief: regenerateBrief,
     uploadFinal: uploadFinal, deleteFile: deleteFile, saveSettings: saveSettings,

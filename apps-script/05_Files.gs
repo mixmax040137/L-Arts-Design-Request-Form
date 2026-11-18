@@ -116,10 +116,16 @@ function uploadAttachment_(jobId, payload, kind, uploader) {
     uploadedAt: nowIso_(),
     uploadedBy: truncate_(uploader || req.requesterEmail, 150)
   };
-  insert_(SHEET.ATTACHMENTS, record);
-
-  var newCount = filterBy_(SHEET.ATTACHMENTS, 'jobId', req.jobId).length;
-  update_(SHEET.REQUESTS, req._row, { attachmentCount: newCount, updatedAt: nowIso_() });
+  // บันทึกทะเบียนและนับไฟล์ภายใต้ lock เพราะหน้าเว็บอัปโหลดหลายไฟล์พร้อมกัน
+  // ถ้าไม่ล็อก ไฟล์ที่เขียนทีหลังอาจนับได้น้อยกว่าความจริง
+  withLock_(function () {
+    insert_(SHEET.ATTACHMENTS, record);
+    var row = getRequest_(req.jobId);
+    if (row) {
+      var newCount = filterBy_(SHEET.ATTACHMENTS, 'jobId', req.jobId).length;
+      update_(SHEET.REQUESTS, row._row, { attachmentCount: newCount, updatedAt: nowIso_() });
+    }
+  });
 
   if (fileKind !== 'source') {
     logTimeline_(req.jobId, uploader, 'UPLOAD', '', '',
@@ -172,23 +178,25 @@ function deleteAttachment_(attachmentId, actor) {
   return true;
 }
 
+/** ข้อมูลไฟล์หนึ่งไฟล์สำหรับหน้าเว็บ */
+function attachmentView_(f) {
+  return {
+    id: str_(f.id),
+    kind: str_(f.kind),
+    fileName: str_(f.fileName),
+    fileUrl: str_(f.fileUrl),
+    sizeBytes: int_(f.sizeBytes),
+    sizeLabel: formatBytes_(f.sizeBytes),
+    uploadedAt: str_(f.uploadedAt),
+    uploadedBy: str_(f.uploadedBy)
+  };
+}
+
 /** รายการไฟล์ของงานหนึ่งใบ */
 function listAttachments_(jobId, kind) {
   var all = filterBy_(SHEET.ATTACHMENTS, 'jobId', str_(jobId).toUpperCase());
   var k = str_(kind);
-  return all.filter(function (f) { return !k || str_(f.kind) === k; })
-    .map(function (f) {
-      return {
-        id: f.id,
-        kind: f.kind,
-        fileName: f.fileName,
-        fileUrl: f.fileUrl,
-        sizeBytes: int_(f.sizeBytes),
-        sizeLabel: formatBytes_(f.sizeBytes),
-        uploadedAt: str_(f.uploadedAt),
-        uploadedBy: str_(f.uploadedBy)
-      };
-    });
+  return all.filter(function (f) { return !k || str_(f.kind) === k; }).map(attachmentView_);
 }
 
 /** คลังผลงาน: งานที่ส่งมอบแล้วพร้อมไฟล์ฉบับสมบูรณ์ */

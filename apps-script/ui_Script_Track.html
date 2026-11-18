@@ -86,7 +86,20 @@ var Track = (function () {
     }).join('');
 
     var actionBox = '';
-    if (view.canApprove || view.canRequestRevision) {
+    if (view.approved) {
+      actionBox =
+        '<div class="card-soft p-3 p-md-4 mb-3" style="border-color:#a7f3d0;background:#f0fdf4">' +
+          '<div class="fw-semibold mb-1"><i class="bi bi-check-circle-fill me-2" style="color:var(--success)"></i>' +
+          'ท่านอนุมัติร่างชิ้นงานแล้ว</div>' +
+          '<div style="font-size:.85rem;color:var(--text-light)">' +
+            (view.approvedAt ? 'เมื่อ ' + App.thaiDate(view.approvedAt, true) + ' ' : '') +
+            'เจ้าหน้าที่กำลังจัดทำไฟล์ฉบับสมบูรณ์ ระบบจะแจ้งทางอีเมลเมื่อส่งมอบ ' +
+            'หากต้องการแก้ไขเพิ่มเติม กรุณาติดต่อฝ่ายสื่อสารองค์กรโดยตรง</div>' +
+          (view.draftUrl ?
+            '<a href="' + App.esc(view.draftUrl) + '" target="_blank" class="btn btn-ghost btn-sm mt-3">' +
+            '<i class="bi bi-box-arrow-up-right me-1"></i>เปิดดูร่างที่อนุมัติ</a>' : '') +
+        '</div>';
+    } else if (view.canApprove || view.canRequestRevision) {
       actionBox =
         '<div class="card-soft p-3 p-md-4 mb-3" style="border-color:#fed7aa;background:#fffaf5">' +
           '<div class="fw-semibold mb-2"><i class="bi bi-eye me-2" style="color:var(--primary)"></i>' +
@@ -263,9 +276,11 @@ var Track = (function () {
     }).then(function (ok) {
       if (!ok) return;
       App.loading(true, 'กำลังบันทึกการอนุมัติ...');
-      return App.api('apiApproveDraft', [auth.jobId, auth.email, auth.token]).then(function () {
+      return App.api('apiApproveDraft', [auth.jobId, auth.email, auth.token]).then(function (res) {
         App.loading(false);
-        App.toast('บันทึกการอนุมัติเรียบร้อย ขอบคุณครับ', 'ok');
+        App.toast(res && res.alreadyApproved
+          ? 'ท่านอนุมัติร่างนี้ไว้แล้ว ไม่ต้องกดซ้ำ'
+          : 'บันทึกการอนุมัติเรียบร้อย ขอบคุณครับ', 'ok');
         refresh();
       });
     }).catch(function (err) {

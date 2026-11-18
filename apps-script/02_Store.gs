@@ -78,11 +78,26 @@ function rowToObject_(row, cols) {
   return obj;
 }
 
+/**
+ * แปลงค่าก่อนเขียนลงชีต ให้ Google Sheets เก็บเป็นข้อความตามที่กรอกจริง
+ * Sheets ตีความข้อความที่พิมพ์เข้าไปเหมือนคนพิมพ์เอง จึงเกิดปัญหา 2 แบบ
+ *  - ตัวเลขที่ขึ้นต้นด้วย 0 เช่นเบอร์โทร 0812345678 ถูกแปลงเป็นตัวเลขและเลข 0 หาย
+ *  - ข้อความที่ขึ้นต้นด้วย = + - @ ถูกตีความเป็นสูตร เช่น "- วันที่ 20" กลายเป็น #ERROR!
+ *    และเปิดช่องให้แทรกสูตรจากแบบฟอร์มสาธารณะได้
+ * ใส่ ' นำหน้าเพื่อบังคับเป็นข้อความ Sheets จะไม่เก็บเครื่องหมายนี้ไว้ในค่าจริง
+ */
+function sheetValue_(v) {
+  if (v === null || v === undefined) return '';
+  if (typeof v !== 'string' || v === '') return v;
+  if (/^[=+\-@']/.test(v)) return "'" + v;
+  if (/^[0-9]+$/.test(v) && (v.charAt(0) === '0' || v.length > 15)) return "'" + v;
+  return v;
+}
+
 function objectToRow_(obj, cols) {
   var row = [];
   for (var c = 0; c < cols.length; c++) {
-    var v = obj[cols[c]];
-    row.push(v === null || v === undefined ? '' : v);
+    row.push(sheetValue_(obj[cols[c]]));
   }
   return row;
 }
@@ -137,8 +152,7 @@ function update_(name, rowIndex, patch) {
   for (var i = 0; i < keys.length; i++) {
     var idx = cols.indexOf(keys[i]);
     if (idx < 0) continue;
-    var v = patch[keys[i]];
-    sh.getRange(rowIndex, idx + 1).setValue(v === null || v === undefined ? '' : v);
+    sh.getRange(rowIndex, idx + 1).setValue(sheetValue_(patch[keys[i]]));
   }
 }
 

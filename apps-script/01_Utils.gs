@@ -126,6 +126,17 @@ function normalizePhone_(v) {
   return str_(v).replace(/[^0-9]/g, '');
 }
 
+/**
+ * เบอร์โทรสำหรับแสดงผล
+ * แถวที่บันทึกก่อนแก้ปัญหาเลข 0 หาย จะเหลือ 8-9 หลักโดยไม่มี 0 นำหน้า จึงเติมกลับให้
+ */
+function phoneOut_(v) {
+  var digits = str_(v).replace(/[^0-9]/g, '');
+  if (!digits) return str_(v);
+  if (digits.charAt(0) !== '0' && (digits.length === 8 || digits.length === 9)) digits = '0' + digits;
+  return digits;
+}
+
 /** ตรวจว่าเป็น URL http หรือ https ที่ใช้ได้ */
 function isValidUrl_(v) {
   var s = str_(v);

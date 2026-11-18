@@ -42,6 +42,62 @@ var Form = (function () {
 
     if (items.length === 0) addItem();
     setupDropzone();
+    restoreContact();
+  }
+
+  /* ------------------------------------------- จำข้อมูลผู้ประสานงาน */
+
+  // เก็บไว้ในเบราว์เซอร์ของผู้ใช้เครื่องนั้นเท่านั้น ใช้เติมให้อัตโนมัติเมื่อยื่นคำขอครั้งถัดไป
+  var CONTACT_KEY = 'lartsDesignContact';
+  var CONTACT_FIELDS = { name: 'f-name', email: 'f-email', phone: 'f-phone', line: 'f-line',
+    dept: 'f-dept', deptOther: 'f-dept-other' };
+
+  function rememberContact() {
+    var data = {};
+    Object.keys(CONTACT_FIELDS).forEach(function (k) {
+      data[k] = document.getElementById(CONTACT_FIELDS[k]).value.trim();
+    });
+    try { localStorage.setItem(CONTACT_KEY, JSON.stringify(data)); } catch (e) { /* ไม่บังคับ */ }
+  }
+
+  function restoreContact() {
+    var data = null;
+    try { data = JSON.parse(localStorage.getItem(CONTACT_KEY) || 'null'); } catch (e) { data = null; }
+    var filled = false;
+    if (data && typeof data === 'object') {
+      Object.keys(CONTACT_FIELDS).forEach(function (k) {
+        var el = document.getElementById(CONTACT_FIELDS[k]);
+        if (!el || el.value || !data[k]) return;
+        if (el.tagName === 'SELECT' && !el.querySelector('option[value="' + CSS.escape(data[k]) + '"]')) return;
+        el.value = data[k];
+        filled = true;
+      });
+    }
+    onDeptChange();
+    document.getElementById('f-remembered').classList.toggle('d-none', !filled);
+  }
+
+  function forgetContact() {
+    try { localStorage.removeItem(CONTACT_KEY); } catch (e) { /* ไม่บังคับ */ }
+    Object.keys(CONTACT_FIELDS).forEach(function (k) {
+      document.getElementById(CONTACT_FIELDS[k]).value = '';
+    });
+    onDeptChange();
+    document.getElementById('f-remembered').classList.add('d-none');
+    document.getElementById('f-name').focus();
+  }
+
+  /** ใช้ค่าตั้งค่าใหม่ทันทีหลังผู้ดูแลบันทึก โดยไม่ต้องรีเฟรชหน้า */
+  function applySettings(settings) {
+    cfg.settings = settings;
+    document.getElementById('file-hint').textContent =
+      'รองรับ ' + settings.allowedFileTypes.split(',').join(', ') +
+      ' ขนาดไม่เกิน ' + settings.maxFileMB + ' MB ต่อไฟล์ สูงสุด ' + settings.maxFiles + ' ไฟล์';
+    var closed = document.getElementById('form-closed');
+    closed.classList.toggle('d-none', settings.formOpen);
+    closed.innerHTML = settings.formOpen ? '' :
+      '<i class="bi bi-exclamation-triangle-fill me-2"></i>' + App.esc(settings.closedMessage);
+    document.getElementById('form-body').classList.toggle('d-none', !settings.formOpen);
   }
 
   function setupDropzone() {
@@ -469,8 +525,9 @@ var Form = (function () {
 
     App.api('apiSubmitRequest', [buildPayload()]).then(function (res) {
       created = res;
+      rememberContact();
       if (files.length === 0) return finalize();
-      return uploadSequentially(0).then(finalize);
+      return uploadAll().then(finalize);
     }).then(function () {
       App.loading(false);
       submitting = false;
@@ -487,19 +544,31 @@ var Form = (function () {
     });
   }
 
-  function uploadSequentially(index) {
-    if (index >= files.length) return Promise.resolve();
-    var f = files[index];
-    App.loading(true, 'กำลังอัปโหลดไฟล์ ' + (index + 1) + ' จาก ' + files.length + '...');
-    return App.api('apiUploadFile', [created.jobId, created.trackToken, {
-      fileName: f.name, mimeType: f.type, dataB64: f.dataB64
-    }]).then(function () {
-      return uploadSequentially(index + 1);
-    }).catch(function (err) {
-      // ไฟล์เดียวล้มเหลวไม่ควรทำให้คำขอทั้งใบล้มเหลว
-      App.toast('อัปโหลดไฟล์ "' + f.name + '" ไม่สำเร็จ: ' + err.message, 'err');
-      return uploadSequentially(index + 1);
-    });
+  /**
+   * อัปโหลดไฟล์แนบพร้อมกันครั้งละ 3 ไฟล์ เร็วกว่าส่งทีละไฟล์มากเมื่อแนบหลายไฟล์
+   * ไฟล์ใดล้มเหลวจะแจ้งเตือนแล้วทำไฟล์ถัดไปต่อ ไม่ทำให้คำขอทั้งใบล้มเหลว
+   */
+  function uploadAll() {
+    var next = 0;
+    var done = 0;
+    var total = files.length;
+    App.loading(true, 'กำลังอัปโหลดไฟล์แนบ 0 จาก ' + total + '...');
+    function worker() {
+      if (next >= total) return Promise.resolve();
+      var f = files[next++];
+      return App.api('apiUploadFile', [created.jobId, created.trackToken, {
+        fileName: f.name, mimeType: f.type, dataB64: f.dataB64
+      }]).catch(function (err) {
+        App.toast('อัปโหลดไฟล์ "' + f.name + '" ไม่สำเร็จ: ' + err.message, 'err');
+      }).then(function () {
+        done++;
+        App.loading(true, 'กำลังอัปโหลดไฟล์แนบ ' + done + ' จาก ' + total + '...');
+        return worker();
+      });
+    }
+    var workers = [];
+    for (var i = 0; i < Math.min(3, total); i++) workers.push(worker());
+    return Promise.all(workers);
   }
 
   function finalize() {
@@ -531,6 +600,7 @@ var Form = (function () {
     created = null;
     document.getElementById('form-done').classList.add('d-none');
     document.getElementById('form-body').classList.remove('d-none');
+    restoreContact();
     showStep(1);
     if (goToForm) App.go('form');
   }
@@ -545,7 +615,8 @@ var Form = (function () {
     init: init, next: next, back: back, addItem: addItem, removeItem: removeItem,
     updateItem: updateItem, updateItemQuiet: updateItemQuiet, toggleChannel: toggleChannel,
     onDeptChange: onDeptChange, onDueChange: onDueChange, pickFiles: pickFiles,
-    removeFile: removeFile, reset: reset, goTrackResult: goTrackResult
+    removeFile: removeFile, reset: reset, goTrackResult: goTrackResult,
+    forgetContact: forgetContact, applySettings: applySettings
   };
 })();
 </script>

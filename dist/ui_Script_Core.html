@@ -15,8 +15,10 @@ var App = (function () {
     return new Promise(function (resolve, reject) {
       var runner = google.script.run
         .withSuccessHandler(function (res) {
-          if (res && res.ok) resolve(res.data);
-          else reject(new Error((res && res.error) || 'เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ'));
+          if (res && res.ok) { resolve(res.data); return; }
+          var e = new Error((res && res.error) || 'เกิดข้อผิดพลาดที่ไม่ทราบสาเหตุ');
+          e.code = (res && res.code) || ''; // AUTH = ต้องเข้าสู่ระบบใหม่, FORBIDDEN = ไม่มีสิทธิ์
+          reject(e);
         })
         .withFailureHandler(function (err) {
           reject(new Error((err && err.message) ? err.message
@@ -237,7 +239,7 @@ var App = (function () {
     var html =
       '<ol class="mb-0" style="padding-left:1.1rem">' +
       '<li>ผู้มีสิทธิ์ขอรับบริการ ได้แก่ หน่วยงาน สาขาวิชา และโครงการภายในคณะศิลปศาสตร์ มหาวิทยาลัยธรรมศาสตร์</li>' +
-      '<li>กรุณายื่นคำขอล่วงหน้าอย่างน้อย <strong>' + s.minLeadDays + ' วันทำการ</strong> ' +
+      '<li>กรุณายื่นคำขอล่วงหน้าอย่างน้อย <strong>' + s.minLeadDays + ' วัน</strong> ' +
       'ก่อนวันที่ต้องการใช้งาน หากเร่งด่วนกว่านั้นต้องระบุเหตุผลประกอบ</li>' +
       '<li>ฝ่ายสื่อสารองค์กรจะส่งร่างชิ้นงานให้ตรวจภายใน <strong>' + s.slaFirstDraftDays +
       ' วันทำการ</strong> นับจากวันที่ข้อมูลครบถ้วน</li>' +
@@ -253,16 +255,24 @@ var App = (function () {
   }
 
   function init() {
-    loading(true, 'กำลังโหลดระบบ...');
     if (BOOT && BOOT.installError) {
       toast('ติดตั้งระบบอัตโนมัติไม่สำเร็จ: ' + BOOT.installError, 'err');
     }
-    api('apiBootstrap').then(function (data) {
+    // ข้อมูลตั้งต้นฝังมากับหน้าเว็บแล้ว เปิดหน้าได้ทันทีโดยไม่ต้องรอเซิร์ฟเวอร์
+    // ถ้าไม่มี (เช่นติดตั้งไม่สำเร็จ) จึงค่อยขอจากเซิร์ฟเวอร์
+    var ready;
+    if (BOOT && BOOT.cfg) {
+      ready = Promise.resolve(BOOT.cfg);
+    } else {
+      loading(true, 'กำลังโหลดระบบ...');
+      ready = api('apiBootstrap');
+    }
+    ready.then(function (data) {
       cfg = data;
       renderFlowSteps();
       renderTerms();
       Form.init(cfg);
-      Admin.init();
+      var session = Admin.init();
       loading(false);
 
       // ยังไม่มีบัญชีผู้ดูแลระบบ ต้องตั้งค่าครั้งแรกก่อนใช้งานส่วนอื่น
@@ -276,6 +286,15 @@ var App = (function () {
       if (startPage === 'track' && BOOT.jobId) {
         go('track');
         Track.openFromLink(BOOT.jobId, BOOT.trackToken);
+      } else if (startPage === 'admin' || startPage === 'login') {
+        // หน้าเจ้าหน้าที่ต้องรอตรวจเซสชันที่จำไว้ก่อน ไม่เช่นนั้นจะเด้งไปหน้าเข้าสู่ระบบ
+        // ทั้งที่ยังเข้าสู่ระบบค้างอยู่ (เช่นกดลิงก์จากอีเมลแจ้งเตือน)
+        if (BOOT.jobId) Admin.setPendingJob(BOOT.jobId);
+        loading(true, 'กำลังตรวจสอบการเข้าสู่ระบบ...');
+        session.then(function () {
+          loading(false);
+          go(Admin.isLoggedIn() ? 'admin' : 'login');
+        });
       } else {
         go(startPage);
       }
@@ -288,10 +307,18 @@ var App = (function () {
     });
   }
 
+  /** ใช้ค่าตั้งค่าใหม่ทั้งหน้าทันทีหลังผู้ดูแลบันทึก */
+  function applySettings(settings) {
+    if (!cfg || !settings) return;
+    cfg.settings = settings;
+    renderTerms();
+    Form.applySettings(settings);
+  }
+
   return {
     init: init, api: api, go: go, toast: toast, loading: loading, prompt: prompt,
     esc: esc, nl2br: nl2br, thaiDate: thaiDate, shortDate: shortDate, todayStr: todayStr,
-    daysUntil: daysUntil, bytes: bytes, showGuide: showGuide,
+    daysUntil: daysUntil, bytes: bytes, showGuide: showGuide, applySettings: applySettings,
     getCfg: function () { return cfg; },
     getView: function () { return currentView; }
   };

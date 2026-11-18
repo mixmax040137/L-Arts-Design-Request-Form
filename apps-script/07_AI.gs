@@ -233,7 +233,11 @@ function generateBrief_(jobId, force) {
   }
 
   var missing = Array.isArray(brief.missingInfo) ? brief.missingInfo : [];
-  update_(SHEET.REQUESTS, req._row, {
+  // การเรียก AI ใช้เวลาหลายวินาที ระหว่างนั้นอาจมีการลบคำขออื่นจนเลขแถวเลื่อน
+  // จึงต้องหาแถวใหม่ก่อนเขียน ไม่เช่นนั้นผลสรุปอาจไปทับคำขอใบอื่น
+  var latest = getRequest_(req.jobId);
+  if (!latest) return { jobId: req.jobId, skipped: true, deleted: true };
+  update_(SHEET.REQUESTS, latest._row, {
     briefStatus: 'DONE',
     briefText: truncate_(briefToText_(brief), 8000),
     briefMissing: truncate_(missing.join(' | '), 2000),
@@ -273,6 +277,19 @@ function workerOnce() {
  *  2) สรุป Design Brief ของคำขอที่ยังไม่ได้สรุป
  */
 function workerTick() {
+  // ทริกเกอร์ทุก 5 นาทีกับทริกเกอร์ครั้งเดียวหลังมีคำขอใหม่อาจทำงานชนกัน
+  // ถ้ารอบก่อนยังไม่เสร็จให้ข้ามไป ไม่เช่นนั้นจะเรียก AI สรุปงานใบเดียวกันซ้ำ
+  var cache = CacheService.getScriptCache();
+  if (cache.get('worker:running')) return;
+  cache.put('worker:running', '1', 300);
+  try {
+    workerTickBody_();
+  } finally {
+    cache.remove('worker:running');
+  }
+}
+
+function workerTickBody_() {
   var rows;
   try {
     rows = readAll_(SHEET.REQUESTS);

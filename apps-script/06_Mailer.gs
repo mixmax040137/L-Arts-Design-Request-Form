@@ -66,6 +66,13 @@ function staffRecipients_() {
   return out;
 }
 
+/** ลิงก์เปิดงานใบนั้นในหน้าเจ้าหน้าที่โดยตรง (เข้าสู่ระบบแล้วเปิดรายละเอียดงานให้ทันที) */
+function adminJobUrl_(jobId) {
+  var base = safeWebAppUrl_();
+  if (!base) return '';
+  return base + '?page=admin' + (jobId ? '&job=' + encodeURIComponent(str_(jobId)) : '');
+}
+
 /** โครงอีเมลมาตรฐานของระบบ */
 function emailShell_(headline, subline, bodyHtml, ctaLabel, ctaUrl) {
   var cta = '';
@@ -254,7 +261,7 @@ function sendStaffNewRequestEmail_(req) {
   var to = staffRecipients_();
   if (to.length === 0) return false;
   var p = priorityInfo_(req.priority);
-  var adminUrl = safeWebAppUrl_() ? safeWebAppUrl_() + '?page=admin' : '';
+  var adminUrl = adminJobUrl_(req.jobId);
   var body =
     '<p>มีคำขอรับบริการออกแบบเข้ามาใหม่ในระบบ</p>' +
     emailTable_([
@@ -263,7 +270,7 @@ function sendStaffNewRequestEmail_(req) {
         ';color:#fff;border-radius:20px;padding:3px 14px;font-size:12px;">' + escapeHtml_(p.label) + '</span>'],
       ['ชื่อโครงการ', escapeHtml_(req.projectName)],
       ['ผู้ขอรับบริการ', escapeHtml_(req.requesterName) + ' (' + escapeHtml_(req.department) + ')'],
-      ['ติดต่อ', escapeHtml_(req.requesterEmail) + ' / ' + escapeHtml_(req.requesterPhone)],
+      ['ติดต่อ', escapeHtml_(req.requesterEmail) + ' / ' + escapeHtml_(phoneOut_(req.requesterPhone))],
       ['กำหนดใช้งาน', escapeHtml_(formatThaiDate_(req.dueDate))],
       ['ไฟล์แนบ', int_(req.attachmentCount) + ' ไฟล์'],
       ['โฟลเดอร์งาน', '<a href="' + escapeHtml_(req.folderUrl) + '">เปิดโฟลเดอร์ใน Drive</a>']
@@ -276,14 +283,14 @@ function sendStaffNewRequestEmail_(req) {
 
   return sendMail_(to, '[' + req.jobId + '] คำขอออกแบบใหม่ — ' + str_(req.projectName),
     emailShell_('คำขอใหม่เข้าคิว', p.label + ' | กำหนดใช้งาน ' + formatThaiDate_(req.dueDate),
-      body, adminUrl ? 'เปิดหน้าจัดการคำขอ' : '', adminUrl));
+      body, adminUrl ? 'เปิดคำขอนี้' : '', adminUrl));
 }
 
 /** แจ้งเจ้าหน้าที่เมื่อผู้ขอส่งคำขอแก้ไข */
 function sendRevisionToStaffEmail_(req, round, comment) {
   var to = staffRecipients_();
   if (to.length === 0) return false;
-  var adminUrl = safeWebAppUrl_() ? safeWebAppUrl_() + '?page=admin' : '';
+  var adminUrl = adminJobUrl_(req.jobId);
   var body =
     '<p>ผู้ขอรับบริการส่งข้อแก้ไขร่างชิ้นงานเข้ามาในระบบ</p>' +
     emailTable_([
@@ -302,7 +309,7 @@ function sendRevisionToStaffEmail_(req, round, comment) {
 function sendApprovalToStaffEmail_(req) {
   var to = staffRecipients_();
   if (to.length === 0) return false;
-  var adminUrl = safeWebAppUrl_() ? safeWebAppUrl_() + '?page=admin' : '';
+  var adminUrl = adminJobUrl_(req.jobId);
   var body =
     '<p>ผู้ขอรับบริการอนุมัติร่างชิ้นงานแล้ว สามารถจัดทำไฟล์ฉบับสมบูรณ์และส่งมอบได้</p>' +
     emailTable_([
@@ -350,7 +357,7 @@ function dailyReminder() {
       '<ul style="padding-left:20px;margin:0 0 8px 0;font-size:13px;">' + lis + '</ul>';
   }
 
-  var adminUrl = safeWebAppUrl_() ? safeWebAppUrl_() + '?page=admin' : '';
+  var adminUrl = adminJobUrl_('');
   var body =
     '<p>สรุปคิวงานออกแบบประจำวันที่ ' + escapeHtml_(formatThaiDate_(today)) + '</p>' +
     listHtml(overdue, 'เกินกำหนดส่ง (' + overdue.length + ' งาน)') +
