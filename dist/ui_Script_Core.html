@@ -203,6 +203,7 @@ var App = (function () {
 
     if (view === 'admin') Admin.onEnter();
     if (view === 'resources') Library.load();
+    if (view === 'form') Workload.load();
   }
 
   function showGuide() {
@@ -312,6 +313,14 @@ var App = (function () {
     });
   }
 
+  /** รายชื่อผู้ออกแบบเปลี่ยน ให้แบบฟอร์มและคิวงานใช้รายชื่อใหม่ทันที */
+  function setDesigners(list) {
+    if (!cfg) return;
+    cfg.designers = list || [];
+    Form.setDesigners(cfg.designers);
+    Workload.invalidate();
+  }
+
   /** ใช้ค่าตั้งค่าใหม่ทั้งหน้าทันทีหลังผู้ดูแลบันทึก */
   function applySettings(settings) {
     if (!cfg || !settings) return;
@@ -324,6 +333,7 @@ var App = (function () {
     init: init, api: api, go: go, toast: toast, loading: loading, prompt: prompt,
     esc: esc, nl2br: nl2br, thaiDate: thaiDate, shortDate: shortDate, todayStr: todayStr,
     daysUntil: daysUntil, bytes: bytes, showGuide: showGuide, applySettings: applySettings,
+    setDesigners: setDesigners,
     getCfg: function () { return cfg; },
     getView: function () { return currentView; }
   };

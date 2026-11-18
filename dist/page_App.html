@@ -246,6 +246,12 @@
                   <i class="bi bi-plus-lg me-1"></i>เพิ่มชิ้นงาน
                 </button>
               </div>
+              <div class="col-12" id="f-designer-wrap">
+                <label class="form-label mb-1">ผู้ออกแบบที่ต้องการ <span class="text-secondary fw-normal">(ไม่บังคับ)</span></label>
+                <div class="form-text mt-0 mb-2">เลือกคนที่ถนัดงานแบบนี้ได้เลย ดูงานในมือของแต่ละคนได้ที่
+                  <a href="#workload-panel" onclick="document.getElementById('workload-panel').scrollIntoView({behavior:'smooth'});return false">คิวงานด้านล่าง</a></div>
+                <div class="designer-pick" id="f-designers" role="radiogroup" aria-label="ผู้ออกแบบที่ต้องการ"></div>
+              </div>
               <div class="col-12">
                 <label class="form-label">ลิงก์ตัวอย่างอ้างอิง (ถ้ามี)</label>
                 <input type="url" class="form-control" id="f-ref" maxlength="2000" placeholder="https://...">
@@ -320,6 +326,9 @@
         </div>
       </div>
     </div>
+
+    <!-- คิวงานออกแบบ: ภาระงานของแต่ละคน ปฏิทิน และตารางงานที่กำลังทำ (ไม่มีข้อมูลผู้ขอ) -->
+    <div id="workload-panel" class="workload-panel d-none"></div>
   </section>
 
   <!-- ======================================================= ติดตามสถานะ -->

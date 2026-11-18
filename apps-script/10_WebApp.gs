@@ -111,6 +111,8 @@ function bootstrapData_() {
       return { key: k, label: STATUS[k].label, color: STATUS[k].color, icon: STATUS[k].icon };
     }),
     resourceCategories: RESOURCE_CATEGORIES,
+    designers: listDesigners_(false).map(designerPublic_),
+    designerPalette: DESIGNER_COLORS,
     settings: {
       revisionLimit: getSettingInt_('revisionLimit', 3),
       minLeadDays: getSettingInt_('minLeadDays', 7),
@@ -119,6 +121,7 @@ function bootstrapData_() {
       maxFiles: getSettingInt_('maxFiles', 8),
       allowedFileTypes: getSetting_('allowedFileTypes', DEFAULT_SETTINGS.allowedFileTypes),
       formOpen: getSettingBool_('publicFormOpen', true),
+      publicWorkload: getSettingBool_('publicWorkload', true),
       closedMessage: getSetting_('closedMessage', DEFAULT_SETTINGS.closedMessage),
       contactEmail: getSetting_('replyTo', DEFAULT_SETTINGS.replyTo)
     }
@@ -502,6 +505,39 @@ function apiAdminDeleteResource(token, id) {
     requireAuth_(token);
     deleteResource_(id);
     return { items: listResources_(true) };
+  });
+}
+
+/* ---------------------------------------------- ผู้ออกแบบและคิวงานสาธารณะ */
+
+/** ภาระงาน ปฏิทิน และตารางงานที่กำลังทำ สำหรับหน้ายื่นคำขอ (ไม่ต้องเข้าสู่ระบบ ไม่มีข้อมูลผู้ขอ) */
+function apiPublicWorkload() {
+  return respond_(publicWorkload_);
+}
+
+/** รายชื่อผู้ออกแบบพร้อมภาระงาน (เจ้าหน้าที่ทุกคนดูได้ ใช้ในปุ่มมอบหมาย) */
+function apiAdminDesigners(token) {
+  return respond_(function () {
+    requireAuth_(token);
+    return adminDesigners_();
+  });
+}
+
+function apiAdminSaveDesigner(token, payload) {
+  return respond_(function () {
+    requireAdmin_(token);
+    var result = saveDesigner_(payload);
+    result.list = adminDesigners_();
+    result.designers = listDesigners_(false).map(designerPublic_);
+    return result;
+  });
+}
+
+function apiAdminDeleteDesigner(token, id) {
+  return respond_(function () {
+    requireAdmin_(token);
+    deleteDesigner_(id);
+    return { list: adminDesigners_(), designers: listDesigners_(false).map(designerPublic_) };
   });
 }
 

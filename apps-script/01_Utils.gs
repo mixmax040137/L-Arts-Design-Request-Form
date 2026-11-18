@@ -275,7 +275,7 @@ function sanitizeSetting_(key, value) {
     maxFileMB: { min: 1, max: 25, label: 'ขนาดไฟล์สูงสุด (MB)' },
     maxFiles: { min: 1, max: 20, label: 'จำนวนไฟล์แนบสูงสุด' }
   };
-  var BOOLEAN = ['notifyOwnerAlways', 'aiEnabled', 'publicFormOpen'];
+  var BOOLEAN = ['notifyOwnerAlways', 'aiEnabled', 'publicFormOpen', 'publicWorkload'];
 
   if (Object.prototype.hasOwnProperty.call(NUMERIC, key)) {
     var rule = NUMERIC[key];

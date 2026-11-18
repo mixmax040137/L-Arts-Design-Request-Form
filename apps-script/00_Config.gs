@@ -44,8 +44,16 @@ var SHEET = {
   COUNTERS: 'Counters',
   REPLIES: 'Replies',       // ผู้ขอตอบ "รอข้อมูลเพิ่มเติม" ผ่านระบบ
   FEEDBACK: 'Feedback',     // แบบประเมินความพึงพอใจหลังส่งมอบ
-  RESOURCES: 'Resources'    // คลังไฟล์ CI ให้ดาวน์โหลดเอง
+  RESOURCES: 'Resources',   // คลังไฟล์ CI ให้ดาวน์โหลดเอง
+  DESIGNERS: 'Designers'    // รายชื่อผู้ออกแบบที่ผู้ขอเลือกได้
 };
+
+/**
+ * สีประจำตัวผู้ออกแบบ (เรียงตามลำดับที่เพิ่ม) ใช้ในปฏิทินและกราฟภาระงาน
+ * 4 สีแรกแยกกันชัดสำหรับทีม 4 คน สีเทาสงวนไว้สำหรับงานที่ยังไม่ระบุผู้ออกแบบ
+ */
+var DESIGNER_COLORS = ['#2563eb', '#db2777', '#059669', '#9333ea', '#ea580c', '#0891b2', '#ca8a04', '#be123c'];
+var UNASSIGNED_COLOR = '#94a3b8';
 
 /** ชีตที่เก็บข้อมูลของคำขอแต่ละใบ (ใช้ตอนลบคำขอ ล้างข้อมูล และย้ายข้อมูลเก่าไปเก็บถาวร) */
 var JOB_SHEETS = ['Deliverables', 'Attachments', 'Revisions', 'Timeline', 'Replies', 'Feedback'];
@@ -169,6 +177,7 @@ var DEFAULT_SETTINGS = {
   aiEnabled: 'true',
   aiModel: 'claude-opus-5',
   publicFormOpen: 'true',
+  publicWorkload: 'true',
   closedMessage: 'ขณะนี้ระบบปิดรับคำขอชั่วคราว กรุณาติดต่อฝ่ายสื่อสารองค์กรโดยตรง'
 };
 
@@ -205,7 +214,9 @@ var COLUMNS = {
   Replies:    ['id', 'jobId', 'createdAt', 'byName', 'byEmail', 'question', 'answer', 'fileCount', 'returnedTo'],
   Feedback:   ['id', 'jobId', 'createdAt', 'updatedAt', 'rating', 'comment', 'byEmail'],
   Resources:  ['id', 'title', 'description', 'category', 'kind', 'url', 'fileId', 'fileName', 'mimeType',
-    'sizeBytes', 'active', 'sortOrder', 'createdAt', 'createdBy', 'updatedAt']
+    'sizeBytes', 'active', 'sortOrder', 'createdAt', 'createdBy', 'updatedAt'],
+  Designers:  ['id', 'name', 'shortName', 'specialty', 'color', 'email', 'capacity', 'accepting', 'active',
+    'sortOrder', 'createdAt', 'updatedAt']
 };
 
 /** สีหลักของระบบ (ใช้ทั้งใน UI และอีเมล) */

@@ -518,6 +518,33 @@ group('6. การติดตามสถานะ (สิทธิ์กา�
     assertEqual(view.assignedTo, undefined, 'ต้องไม่เปิดเผยผู้รับผิดชอบภายใน');
   });
 
+  test('หน้าติดตามแสดงผู้ออกแบบเฉพาะคนที่อยู่ในรายชื่อ ชื่ออื่นที่พิมพ์เองไม่แสดง', () => {
+    const a2 = bootstrapApp();
+    const d = a2.ctx.saveDesigner_({ name: 'ธิติวุฒิ บุญแก้ว' }).designer;
+    const job = a2.ctx.createRequest_(samplePayload());
+    a2.ctx.finalizeRequest_(job.jobId);
+    const view = () => a2.ctx.getPublicView_(job.jobId, '', job.trackToken);
+    assertEqual(view().designer, null, 'ยังไม่มอบหมายต้องไม่มีผู้ออกแบบ');
+    a2.ctx.assignRequest_(job.jobId, 'ฟรีแลนซ์ภายนอก', 'x');
+    assertEqual(view().designer, null, 'ชื่อที่ไม่อยู่ในรายชื่อเป็นข้อมูลภายใน');
+    a2.ctx.assignRequest_(job.jobId, 'ธิติวุฒิ  บุญแก้ว', 'x');
+    assertEqual(view().designer.name, 'ธิติวุฒิ บุญแก้ว');
+    assertEqual(view().designer.color, d.color);
+    assertEqual(view().designer.email, undefined, 'ต้องไม่ส่งอีเมลผู้ออกแบบ');
+    const tl = JSON.stringify(view().timeline);
+    assertEqual(tl.indexOf('ฟรีแลนซ์ภายนอก'), -1, 'ประวัติของผู้ขอต้องไม่มีชื่อที่เจ้าหน้าที่พิมพ์เอง');
+    assertEqual(tl.indexOf('มอบหมายให้'), -1, 'การมอบหมายของเจ้าหน้าที่เป็นข้อมูลภายใน');
+  });
+
+  test('ประวัติของผู้ขอยังแสดงผู้ออกแบบที่ผู้ขอเลือกเอง', () => {
+    const a2 = bootstrapApp();
+    const d = a2.ctx.saveDesigner_({ name: 'กนกพร ศรีสุข' }).designer;
+    const job = a2.ctx.createRequest_(samplePayload({ designerId: d.id }));
+    a2.ctx.finalizeRequest_(job.jobId);
+    const tl = a2.ctx.getPublicView_(job.jobId, '', job.trackToken).timeline;
+    assert(tl.some((t) => t.action === 'ASSIGN' && t.detail.indexOf('กนกพร ศรีสุข') >= 0));
+  });
+
   test('บันทึกภายในไม่ปรากฏในไทม์ไลน์ของผู้ขอ', () => {
     app.ctx.addInternalNote_(created.jobId, 'ความลับภายในทีม', 'เจ้าหน้าที่');
     const view = app.ctx.getPublicView_(created.jobId, 'thitiwut@arts.tu.ac.th', '');
@@ -3014,6 +3041,259 @@ group('30. ย้ายข้อมูลเก่าไปเก็บถาว
     app.ctx.runArchive_(dateStr(-365), 'x');
     assertEqual(app.ctx.readArchive_('Requests').length, 2);
     assertEqual(app.ctx.runArchive_(dateStr(-365), 'x').moved, 0, 'ไม่มีอะไรให้ย้ายแล้ว');
+  });
+}
+
+/* ==========================================================================
+   31. ผู้ขอเลือกผู้ออกแบบ และคิวงานบนหน้ายื่นคำขอ
+   ========================================================================== */
+group('31. เลือกผู้ออกแบบและคิวงานสาธารณะ');
+
+{
+  const loginAdmin = (app) => app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token;
+  function team(app) {
+    const t = loginAdmin(app);
+    const add = (p) => app.ctx.apiAdminSaveDesigner(t, p).data.designer;
+    return {
+      a: add({ name: 'ธิติวุฒิ บุญแก้ว', shortName: 'ต้น', specialty: 'โปสเตอร์ อินโฟกราฟิก', email: 'ton@arts.tu.ac.th', capacity: 4 }),
+      b: add({ name: 'สุดารัตน์ ใจดี', shortName: 'ดา', specialty: 'โซเชียลมีเดีย' }),
+      c: add({ name: 'ปิยะ มีสุข', capacity: 2, accepting: false }),
+      d: add({ name: 'วรรณา ศรีสุข', active: false })
+    };
+  }
+  function submit(app, overrides) {
+    const job = app.ctx.createRequest_(samplePayload(Object.assign({ requesterName: 'ผู้ขอ ไม่ควรเปิดเผย' }, overrides)));
+    app.ctx.finalizeRequest_(job.jobId);
+    return job;
+  }
+
+  test('เพิ่มผู้ออกแบบได้ สีไม่ซ้ำกันสำหรับ 4 คนแรก และหน้าเว็บไม่เห็นอีเมล', () => {
+    const app = bootstrapApp();
+    const t = team(app);
+    const cfg = app.ctx.bootstrapData_();
+    assertEqual(cfg.designers.length, 3, 'คนที่ซ่อนไว้ต้องไม่อยู่ในตัวเลือก');
+    const colors = [t.a.color, t.b.color, t.c.color, t.d.color];
+    assertEqual(new Set(colors).size, 4, 'ต้องได้ 4 สีที่ต่างกัน');
+    assertEqual(JSON.stringify(cfg).indexOf('ton@arts.tu.ac.th'), -1, 'ห้ามส่งอีเมลผู้ออกแบบไปหน้าเว็บ');
+  });
+
+  test('ผู้ขอเลือกผู้ออกแบบแล้วงานผูกกับคนนั้นทันที และผู้ออกแบบได้รับอีเมล', () => {
+    const app = bootstrapApp();
+    const t = team(app);
+    const job = submit(app, { designerId: t.a.id });
+    assertEqual(job.designerName, 'ธิติวุฒิ บุญแก้ว');
+    assertEqual(app.ctx.getRequest_(job.jobId).assignedTo, 'ธิติวุฒิ บุญแก้ว');
+    assert(app.ctx.getTimeline_(job.jobId).some((x) => x.action === 'ASSIGN' && x.detail.indexOf('ผู้ขอเลือก') >= 0));
+    const staffMail = app.state.outbox.filter((m) => /คำขอออกแบบใหม่/.test(m.subject))[0];
+    assert(staffMail.to.indexOf('ton@arts.tu.ac.th') >= 0, 'ผู้ออกแบบที่ถูกเลือกต้องได้รับแจ้ง');
+    assert(staffMail.htmlBody.indexOf('ผู้ออกแบบที่ผู้ขอเลือก') >= 0);
+    const confirm = app.state.outbox.filter((m) => /ยืนยันการรับคำขอ/.test(m.subject))[0];
+    assert(confirm.htmlBody.indexOf('ธิติวุฒิ บุญแก้ว') >= 0, 'อีเมลยืนยันต้องบอกผู้ออกแบบที่เลือก');
+  });
+
+  test('ไม่เลือกผู้ออกแบบได้ งานรอฝ่ายฯ จัดสรร', () => {
+    const app = bootstrapApp();
+    team(app);
+    const job = submit(app);
+    assertEqual(app.ctx.getRequest_(job.jobId).assignedTo, '');
+  });
+
+  test('เลือกคนที่งดรับงาน ถูกซ่อน หรือไม่มีอยู่จริงไม่ได้ และไม่เสียเลขที่คำขอ', () => {
+    const app = bootstrapApp();
+    const t = team(app);
+    assertThrows(() => app.ctx.createRequest_(samplePayload({ designerId: t.c.id })), 'งดรับงานใหม่');
+    assertThrows(() => app.ctx.createRequest_(samplePayload({ designerId: t.d.id })), 'ไม่อยู่ในรายชื่อ');
+    assertThrows(() => app.ctx.createRequest_(samplePayload({ designerId: 'P-ปลอม' })), 'ไม่อยู่ในรายชื่อ');
+    const job = app.ctx.createRequest_(samplePayload());
+    assert(job.jobId.indexOf('0001') > 0, 'เลขที่คำขอต้องเริ่มที่ 0001 ได้ ' + job.jobId);
+  });
+
+  test('คิวงานสาธารณะนับงานของแต่ละคนถูกต้อง และไม่เปิดเผยข้อมูลผู้ขอ', () => {
+    const app = bootstrapApp();
+    const t = team(app);
+    submit(app, { designerId: t.a.id, dueDate: dateStr(5), rushReason: 'ด่วน' });
+    submit(app, { designerId: t.a.id, dueDate: dateStr(20) });
+    submit(app, { designerId: t.b.id, dueDate: dateStr(10) });
+    submit(app);
+    const done = submit(app, { designerId: t.b.id });
+    app.ctx.changeStatus_(done.jobId, 'DELIVERED', 'x', { notify: false });
+    app.ctx.createRequest_(samplePayload({ designerId: t.a.id })); // ยังไม่ยืนยัน ไม่ต้องนับ
+
+    const w = app.ctx.apiPublicWorkload().data;
+    assertEqual(w.enabled, true);
+    const byName = Object.fromEntries(w.designers.map((d) => [d.name, d]));
+    assertEqual(byName['ธิติวุฒิ บุญแก้ว'].active, 2);
+    assertEqual(byName['ธิติวุฒิ บุญแก้ว'].dueSoon, 1);
+    assertEqual(byName['ธิติวุฒิ บุญแก้ว'].loadPct, 50);
+    assertEqual(byName['สุดารัตน์ ใจดี'].active, 1, 'งานที่ส่งมอบแล้วไม่นับ');
+    assertEqual(w.unassigned.active, 1);
+    assertEqual(w.jobs.length, 4);
+    assert(w.jobs[0].dueDate <= w.jobs[1].dueDate, 'เรียงตามกำหนดใช้งาน');
+    assertEqual(w.jobs.filter((j) => j.designerId === t.a.id).every((j) => j.color === t.a.color), true);
+    const raw = JSON.stringify(w);
+    ['ผู้ขอ ไม่ควรเปิดเผย', 'thitiwut@arts.tu.ac.th', '0812345678', 'ฝ่ายสื่อสารองค์กร', 'ton@arts.tu.ac.th']
+      .forEach((secret) => assertEqual(raw.indexOf(secret), -1, 'ห้ามมีข้อมูลส่วนตัว: ' + secret));
+  });
+
+  test('คิวงานบนหน้าเว็บอัปเดตทันทีเมื่อสถานะเปลี่ยน (ไม่ค้างแคช)', () => {
+    const app = bootstrapApp();
+    const t = team(app);
+    const job = submit(app, { designerId: t.a.id });
+    const before = app.ctx.apiPublicWorkload().data;
+    assertEqual(before.jobs.length, 1);
+    app.ctx.changeStatus_(job.jobId, 'DELIVERED', 'x', { notify: false });
+    assertEqual(app.ctx.apiPublicWorkload().data.jobs.length, 0);
+    const again = submit(app);
+    app.ctx.apiPublicWorkload();
+    app.ctx.assignRequest_(again.jobId, t.b.name, 'x');
+    const after = app.ctx.apiPublicWorkload().data;
+    assertEqual(after.jobs[0].designerId, t.b.id, 'มอบหมายแล้วต้องเห็นทันที');
+  });
+
+  test('ปิดการแสดงคิวงานบนหน้ายื่นคำขอได้จากหน้าตั้งค่า', () => {
+    const app = bootstrapApp();
+    app.ctx.apiPublicWorkload();
+    app.ctx.apiAdminSaveSettings(loginAdmin(app), { publicWorkload: 'false' });
+    const w = app.ctx.apiPublicWorkload().data;
+    assertEqual(w.enabled, false);
+    assertEqual(w.jobs, undefined, 'ปิดแล้วต้องไม่ส่งข้อมูลงาน');
+  });
+
+  test('เปลี่ยนชื่อผู้ออกแบบแล้วงานที่ผูกอยู่เปลี่ยนตาม ไม่หลุดจากคิว', () => {
+    const app = bootstrapApp();
+    const t = team(app);
+    const job = submit(app, { designerId: t.a.id });
+    const res = app.ctx.apiAdminSaveDesigner(loginAdmin(app), { id: t.a.id, name: 'ธิติวุฒิ บุญแก้ว (ต้น)', capacity: 4 });
+    assertEqual(res.data.renamedJobs, 1);
+    assertEqual(app.ctx.getRequest_(job.jobId).assignedTo, 'ธิติวุฒิ บุญแก้ว (ต้น)');
+    const w = app.ctx.apiPublicWorkload().data;
+    assertEqual(w.designers.find((d) => d.id === t.a.id).active, 1);
+  });
+
+  test('มอบหมายด้วยชื่อที่พิมพ์ต่างกันเล็กน้อยก็ผูกกับผู้ออกแบบคนเดิม และแจ้งผู้ออกแบบครั้งเดียว', () => {
+    const app = bootstrapApp();
+    const t = team(app);
+    const job = submit(app);
+    const assigned = () => app.state.outbox.filter((m) => /มอบหมายงานให้คุณ/.test(m.subject)).length;
+    app.ctx.assignRequest_(job.jobId, '  ธิติวุฒิ   บุญแก้ว ', 'ผู้ดูแลระบบ');
+    assertEqual(app.ctx.getRequest_(job.jobId).assignedTo, 'ธิติวุฒิ บุญแก้ว');
+    assertEqual(assigned(), 1);
+    app.ctx.assignRequest_(job.jobId, 'ธิติวุฒิ บุญแก้ว', 'ผู้ดูแลระบบ');
+    assertEqual(assigned(), 1, 'มอบหมายซ้ำคนเดิมไม่ต้องแจ้งซ้ำ');
+    app.ctx.assignRequest_(job.jobId, t.b.name, 'ผู้ดูแลระบบ');
+    assertEqual(assigned(), 1, 'คนที่ไม่มีอีเมลไม่ต้องส่ง');
+  });
+
+  test('ลบผู้ออกแบบที่ยังมีงานค้างไม่ได้ แต่ลบคนที่ไม่มีงานได้', () => {
+    const app = bootstrapApp();
+    const t = team(app);
+    submit(app, { designerId: t.a.id });
+    const token = loginAdmin(app);
+    const blocked = app.ctx.apiAdminDeleteDesigner(token, t.a.id);
+    assertEqual(blocked.ok, false);
+    assert(blocked.error.indexOf('ยังมีงานที่กำลังทำอยู่ 1 งาน') >= 0);
+    assertEqual(app.ctx.apiAdminDeleteDesigner(token, t.b.id).ok, true);
+    assertEqual(app.ctx.listDesigners_(true).length, 3);
+  });
+
+  test('จัดการรายชื่อผู้ออกแบบได้เฉพาะผู้ดูแลระบบ แต่เจ้าหน้าที่ดูรายชื่อได้', () => {
+    const app = bootstrapApp();
+    const admin = loginAdmin(app);
+    app.ctx.saveUser_(admin, { email: 'staff@arts.tu.ac.th', name: 'เจ้าหน้าที่', role: 'staff', password: 'Password123' });
+    const staff = app.ctx.login_('staff@arts.tu.ac.th', 'Password123').token;
+    assertEqual(app.ctx.apiAdminSaveDesigner(staff, { name: 'ใครสักคน' }).code, 'FORBIDDEN');
+    assertEqual(app.ctx.apiAdminSaveDesigner('', { name: 'ใครสักคน' }).code, 'AUTH');
+    assertEqual(app.ctx.apiAdminDeleteDesigner(staff, 'P-1').code, 'FORBIDDEN');
+    assertEqual(app.ctx.apiAdminDesigners(staff).ok, true);
+    assertEqual(app.ctx.apiAdminDesigners('').code, 'AUTH');
+    assertEqual(app.ctx.apiPublicWorkload().ok, true, 'คิวงานสาธารณะไม่ต้องเข้าสู่ระบบ');
+  });
+
+  test('ข้อมูลผู้ออกแบบผิดรูปแบบหรือชื่อซ้ำถูกปฏิเสธ', () => {
+    const app = bootstrapApp();
+    const token = loginAdmin(app);
+    app.ctx.apiAdminSaveDesigner(token, { name: 'ธิติวุฒิ บุญแก้ว' });
+    assert(app.ctx.apiAdminSaveDesigner(token, { name: 'ธิติวุฒิ  บุญแก้ว' }).error.indexOf('อยู่แล้ว') >= 0);
+    assertEqual(app.ctx.apiAdminSaveDesigner(token, { name: 'ก' }).ok, false);
+    assertEqual(app.ctx.apiAdminSaveDesigner(token, { name: 'คนใหม่', email: 'ไม่ใช่อีเมล' }).ok, false);
+    assertEqual(app.ctx.apiAdminSaveDesigner(token, { name: 'คนใหม่', color: 'red' }).ok, false);
+    assertEqual(app.ctx.apiAdminSaveDesigner(token, { name: 'คนใหม่', capacity: 0 }).ok, false);
+  });
+
+  test('ชื่อที่เคยมอบหมายงานไว้ก่อนมีรายชื่อ ถูกแนะนำให้เพิ่ม และเพิ่มแล้วงานเดิมนับรวมทันที', () => {
+    const app = bootstrapApp();
+    const job = submit(app);
+    app.ctx.assignRequest_(job.jobId, 'ปรีชา งานดี', 'x');
+    const token = loginAdmin(app);
+    const list = app.ctx.apiAdminDesigners(token).data;
+    assertEqual(list.suggestions[0].name, 'ปรีชา งานดี');
+    app.ctx.apiAdminSaveDesigner(token, { name: 'ปรีชา งานดี' });
+    const w = app.ctx.apiPublicWorkload().data;
+    assertEqual(w.designers[0].active, 1);
+    assertEqual(w.unassigned.active, 0);
+    assertEqual(app.ctx.apiAdminDesigners(token).data.suggestions.length, 0);
+  });
+
+  test('เลือกผู้ออกแบบที่ไม่พร้อมรับงาน หน้าเว็บได้รหัส DESIGNER เพื่อพากลับไปเลือกใหม่', () => {
+    const app = bootstrapApp();
+    const t = team(app);
+    const res = app.ctx.apiSubmitRequest(samplePayload({ designerId: t.c.id }));
+    assertEqual(res.ok, false);
+    assertEqual(res.code, 'DESIGNER');
+    assert(res.error.indexOf('ให้ฝ่ายฯ จัดสรรให้') >= 0, 'ข้อความต้องบอกวิธีแก้');
+    const ok = app.ctx.apiSubmitRequest(samplePayload({ designerId: t.a.id }));
+    assertEqual(ok.ok, true);
+    assertEqual(ok.data.designerName, 'ธิติวุฒิ บุญแก้ว');
+  });
+
+  test('ล้างข้อมูลทดสอบแล้วรายชื่อผู้ออกแบบยังอยู่ และคิวงานกลับเป็นศูนย์ทันที', () => {
+    const app = bootstrapApp();
+    const t = team(app);
+    submit(app, { designerId: t.a.id });
+    assertEqual(app.ctx.apiPublicWorkload().data.designers[0].active, 1);
+    app.ctx.resetAllRequests_('x');
+    const w = app.ctx.apiPublicWorkload().data;
+    assertEqual(w.designers.length, 3, 'รายชื่อผู้ออกแบบต้องไม่ถูกลบ');
+    assertEqual(w.designers[0].active, 0, 'แคชต้องถูกล้าง ไม่แสดงงานที่ลบไปแล้ว');
+    assertEqual(w.jobs.length, 0);
+  });
+
+  test('ระดับความหนักของงาน: ว่าง งานน้อย ปานกลาง ค่อนข้างมาก เต็ม', () => {
+    const app = bootstrapApp();
+    const lv = (n, cap) => app.ctx.loadLevel_(n, cap).label;
+    assertEqual(lv(0, 6), 'ว่าง');
+    assertEqual(lv(1, 6), 'งานน้อย', 'มีงาน 1 งานต้องไม่บอกว่าว่าง');
+    assertEqual(lv(3, 6), 'ปานกลาง');
+    assertEqual(lv(3, 4), 'ค่อนข้างมาก', '75% ต้องเป็นค่อนข้างมาก');
+    assertEqual(lv(4, 4), 'เต็ม');
+    assertEqual(app.ctx.loadLevel_(9, 4).pct, 225, 'เกินความจุต้องคืนเปอร์เซ็นต์จริง หน้าเว็บตัดแถบที่ 100% เอง');
+  });
+
+  test('ไม่ระบุชื่อย่อ ใช้ชื่อแรกแทน และหน้าตั้งค่ารู้ว่าเป็นค่าอัตโนมัติ', () => {
+    const app = bootstrapApp();
+    const token = loginAdmin(app);
+    app.ctx.apiAdminSaveDesigner(token, { name: 'สมศรี  รักงาน' });
+    const d = app.ctx.apiAdminDesigners(token).data.designers[0];
+    assertEqual(d.name, 'สมศรี รักงาน', 'ช่องว่างซ้ำต้องถูกยุบ');
+    assertEqual(d.shortName, 'สมศรี');
+    assertEqual(d.shortNameAuto, true);
+    // เปลี่ยนชื่อโดยไม่ระบุชื่อย่อ ชื่อย่อต้องเปลี่ยนตาม ไม่ค้างเป็นชื่อเดิม
+    app.ctx.apiAdminSaveDesigner(token, { id: d.id, name: 'สมใจ รักงาน', shortName: '' });
+    assertEqual(app.ctx.apiAdminDesigners(token).data.designers[0].shortName, 'สมใจ');
+    app.ctx.apiAdminSaveDesigner(token, { id: d.id, name: 'สมใจ รักงาน', shortName: 'พี่ใจ' });
+    const e = app.ctx.apiAdminDesigners(token).data.designers[0];
+    assertEqual(e.shortName, 'พี่ใจ');
+    assertEqual(e.shortNameAuto, false);
+  });
+
+  test('ชื่อผู้ออกแบบที่มีแท็ก HTML ถูกเก็บเป็นข้อความ และอีเมลแจ้งงานไม่รันแท็ก', () => {
+    const app = bootstrapApp();
+    const token = loginAdmin(app);
+    const d = app.ctx.apiAdminSaveDesigner(token, { name: '<img src=x onerror=alert(1)>', email: 'x@arts.tu.ac.th' }).data.designer;
+    const job = submit(app, { designerId: d.id });
+    const mail = app.state.outbox.filter((m) => /คำขอออกแบบใหม่/.test(m.subject))[0];
+    assert(mail.htmlBody.indexOf('<img src=x') < 0, 'อีเมลต้อง escape ชื่อผู้ออกแบบ');
+    assertEqual(app.ctx.getRequest_(job.jobId).assignedTo, '<img src=x onerror=alert(1)>');
   });
 }
 

@@ -5,7 +5,7 @@
  * ไฟล์นี้สร้างอัตโนมัติจาก apps-script/*.gs ด้วยคำสั่ง  npm run bundle
  * ห้ามแก้ไขไฟล์นี้โดยตรง ให้แก้ที่ apps-script/ แล้วสร้างใหม่
  *
- * รวมจาก 14 ไฟล์: 00_Config.gs, 01_Utils.gs, 02_Store.gs, 03_Setup.gs, 04_Requests.gs, 05_Files.gs, 06_Mailer.gs, 07_AI.gs, 08_Auth.gs, 09_Stats.gs, 10_WebApp.gs, 11_Requester.gs, 12_Library.gs, 13_Archive.gs
+ * รวมจาก 15 ไฟล์: 00_Config.gs, 01_Utils.gs, 02_Store.gs, 03_Setup.gs, 04_Requests.gs, 05_Files.gs, 06_Mailer.gs, 07_AI.gs, 08_Auth.gs, 09_Stats.gs, 10_WebApp.gs, 11_Requester.gs, 12_Library.gs, 13_Archive.gs, 14_Designers.gs
  */
 
 
@@ -59,8 +59,16 @@ var SHEET = {
   COUNTERS: 'Counters',
   REPLIES: 'Replies',       // ผู้ขอตอบ "รอข้อมูลเพิ่มเติม" ผ่านระบบ
   FEEDBACK: 'Feedback',     // แบบประเมินความพึงพอใจหลังส่งมอบ
-  RESOURCES: 'Resources'    // คลังไฟล์ CI ให้ดาวน์โหลดเอง
+  RESOURCES: 'Resources',   // คลังไฟล์ CI ให้ดาวน์โหลดเอง
+  DESIGNERS: 'Designers'    // รายชื่อผู้ออกแบบที่ผู้ขอเลือกได้
 };
+
+/**
+ * สีประจำตัวผู้ออกแบบ (เรียงตามลำดับที่เพิ่ม) ใช้ในปฏิทินและกราฟภาระงาน
+ * 4 สีแรกแยกกันชัดสำหรับทีม 4 คน สีเทาสงวนไว้สำหรับงานที่ยังไม่ระบุผู้ออกแบบ
+ */
+var DESIGNER_COLORS = ['#2563eb', '#db2777', '#059669', '#9333ea', '#ea580c', '#0891b2', '#ca8a04', '#be123c'];
+var UNASSIGNED_COLOR = '#94a3b8';
 
 /** ชีตที่เก็บข้อมูลของคำขอแต่ละใบ (ใช้ตอนลบคำขอ ล้างข้อมูล และย้ายข้อมูลเก่าไปเก็บถาวร) */
 var JOB_SHEETS = ['Deliverables', 'Attachments', 'Revisions', 'Timeline', 'Replies', 'Feedback'];
@@ -184,6 +192,7 @@ var DEFAULT_SETTINGS = {
   aiEnabled: 'true',
   aiModel: 'claude-opus-5',
   publicFormOpen: 'true',
+  publicWorkload: 'true',
   closedMessage: 'ขณะนี้ระบบปิดรับคำขอชั่วคราว กรุณาติดต่อฝ่ายสื่อสารองค์กรโดยตรง'
 };
 
@@ -220,7 +229,9 @@ var COLUMNS = {
   Replies:    ['id', 'jobId', 'createdAt', 'byName', 'byEmail', 'question', 'answer', 'fileCount', 'returnedTo'],
   Feedback:   ['id', 'jobId', 'createdAt', 'updatedAt', 'rating', 'comment', 'byEmail'],
   Resources:  ['id', 'title', 'description', 'category', 'kind', 'url', 'fileId', 'fileName', 'mimeType',
-    'sizeBytes', 'active', 'sortOrder', 'createdAt', 'createdBy', 'updatedAt']
+    'sizeBytes', 'active', 'sortOrder', 'createdAt', 'createdBy', 'updatedAt'],
+  Designers:  ['id', 'name', 'shortName', 'specialty', 'color', 'email', 'capacity', 'accepting', 'active',
+    'sortOrder', 'createdAt', 'updatedAt']
 };
 
 /** สีหลักของระบบ (ใช้ทั้งใน UI และอีเมล) */
@@ -516,7 +527,7 @@ function sanitizeSetting_(key, value) {
     maxFileMB: { min: 1, max: 25, label: 'ขนาดไฟล์สูงสุด (MB)' },
     maxFiles: { min: 1, max: 20, label: 'จำนวนไฟล์แนบสูงสุด' }
   };
-  var BOOLEAN = ['notifyOwnerAlways', 'aiEnabled', 'publicFormOpen'];
+  var BOOLEAN = ['notifyOwnerAlways', 'aiEnabled', 'publicFormOpen', 'publicWorkload'];
 
   if (Object.prototype.hasOwnProperty.call(NUMERIC, key)) {
     var rule = NUMERIC[key];
@@ -615,6 +626,11 @@ function sanitizeSetting_(key, value) {
  * 02_Store.gs — ชั้นเข้าถึงข้อมูล (Google Sheets เป็นฐานข้อมูล)
  * ทุกฟังก์ชันในไฟล์นี้อ่าน/เขียนชีตโดยตรง ส่วน business logic อยู่ที่ไฟล์อื่น
  */
+
+/** ชีตที่เมื่อเปลี่ยนแล้วต้องล้างแคชคิวงานบนหน้ายื่นคำขอ */
+function touchesPublicView_(name) {
+  return name === SHEET.REQUESTS || name === SHEET.DESIGNERS;
+}
 
 /** แคชระดับ execution เดียว ไม่ข้าม request */
 var _cache = { ss: null, sheets: {}, settings: null };
@@ -760,6 +776,7 @@ function insert_(name, obj) {
   var sh = sheet_(name);
   var row = objectToRow_(obj, cols);
   sh.appendRow(row);
+  if (touchesPublicView_(name)) bustPublicCache_();
   var saved = {};
   for (var k in obj) if (Object.prototype.hasOwnProperty.call(obj, k)) saved[k] = obj[k];
   saved._row = sh.getLastRow();
@@ -779,11 +796,13 @@ function update_(name, rowIndex, patch) {
     if (idx < 0) continue;
     sh.getRange(rowIndex, idx + 1).setValue(sheetValue_(patch[keys[i]]));
   }
+  if (touchesPublicView_(name)) bustPublicCache_();
 }
 
 /** ลบแถว */
 function remove_(name, rowIndex) {
   deleteDataRows_(sheet_(name), rowIndex, 1, COLUMNS[name].length);
+  if (touchesPublicView_(name)) bustPublicCache_();
 }
 
 /**
@@ -814,6 +833,7 @@ function clearSheetRows_(name) {
   var lastRow = sh.getLastRow();
   if (lastRow < 2) return 0;
   deleteDataRows_(sh, 2, lastRow - 1, COLUMNS[name].length);
+  if (touchesPublicView_(name)) bustPublicCache_();
   return lastRow - 1;
 }
 
@@ -892,6 +912,7 @@ function setSetting_(key, value) {
     insert_(SHEET.SETTINGS, { key: k, value: str_(value), updatedAt: nowIso_() });
   }
   _cache.settings = null;
+  bustPublicCache_(); // เช่น เปิด/ปิดการแสดงคิวงานบนหน้ายื่นคำขอ
 }
 
 /* ---------------------------------------------------------------- Counters */
@@ -996,7 +1017,7 @@ function setupSystem() {
   // 3) สร้างชีตทั้งหมดพร้อมหัวตาราง
   var names = [SHEET.REQUESTS, SHEET.DELIVERABLES, SHEET.ATTACHMENTS, SHEET.REVISIONS,
     SHEET.TIMELINE, SHEET.USERS, SHEET.SETTINGS, SHEET.COUNTERS,
-    SHEET.REPLIES, SHEET.FEEDBACK, SHEET.RESOURCES];
+    SHEET.REPLIES, SHEET.FEEDBACK, SHEET.RESOURCES, SHEET.DESIGNERS];
   for (var i = 0; i < names.length; i++) {
     ensureSheet_(book, names[i]);
   }
@@ -1575,6 +1596,8 @@ function createRequest_(payload) {
     throw appError_(getSetting_('closedMessage', 'ขณะนี้ระบบปิดรับคำขอชั่วคราว'));
   }
   var data = validateRequestPayload_(payload);
+  // ผู้ออกแบบที่ผู้ขอเลือก (ไม่เลือก = ให้ฝ่ายฯ จัดสรรให้) ตรวจก่อนออกเลขที่ เพื่อไม่ให้เลขที่ถูกใช้ไปเปล่า ๆ
+  var designer = requesterDesigner_(pick_(payload, 'designerId', ''));
 
   return withLock_(function () {
     var jobId = newJobId_();
@@ -1614,7 +1637,7 @@ function createRequest_(payload) {
       draftUrl: '',
       revisionCount: 0,
       revisionLimit: revisionLimit,
-      assignedTo: '',
+      assignedTo: designer ? designer.name : '',
       submittedAt: '',
       startedAt: '',
       firstDraftAt: '',
@@ -1643,10 +1666,14 @@ function createRequest_(payload) {
     }
 
     logTimeline_(jobId, data.requesterName, 'CREATE', '', STATUS.NEW.key, 'ผู้ขอรับบริการยื่นคำขอผ่านแบบฟอร์มออนไลน์');
+    if (designer) {
+      logTimeline_(jobId, data.requesterName, 'ASSIGN', '', '', 'ผู้ขอเลือกผู้ออกแบบ: ' + designer.name);
+    }
 
     return {
       jobId: jobId,
       trackToken: row.trackToken,
+      designerName: designer ? designer.name : '',
       folderUrl: folder.url,
       maxFiles: getSettingInt_('maxFiles', 8),
       maxFileMB: getSettingInt_('maxFileMB', 10),
@@ -2013,6 +2040,9 @@ function getPublicView_(jobId, email, token) {
   var timeline = full.timeline
     .filter(function (t) {
       var a = str_(t.action);
+      // การมอบหมายของเจ้าหน้าที่เป็นข้อมูลภายใน (อาจเป็นชื่อที่พิมพ์เอง) ผู้ขอเห็นผู้ออกแบบจาก designer แทน
+      // ยกเว้นรายการที่ผู้ขอเลือกผู้ออกแบบเองตอนยื่นคำขอ
+      if (a === 'ASSIGN') return str_(t.detail).indexOf('ผู้ขอเลือก') === 0;
       return a !== 'EMAIL_ERROR' && a !== 'NOTE' && a !== 'EDIT' && a !== 'ERROR';
     })
     .map(function (t) {
@@ -2041,6 +2071,7 @@ function getPublicView_(jobId, email, token) {
     projectName: req.projectName,
     requesterName: req.requesterName,
     department: req.department,
+    designer: publicDesignerOf_(req.assignedTo),
     createdAt: str_(req.createdAt),
     dueDate: str_(req.dueDate),
     deliveredAt: str_(req.deliveredAt),
@@ -2175,10 +2206,21 @@ function setDraftUrl_(jobId, url, actor) {
 function assignRequest_(jobId, assignee, actor) {
   var req = getRequest_(jobId);
   if (!req) throw appError_('ไม่พบเลขที่คำขอ ' + jobId);
-  var name = truncate_(assignee, 150);
+  // ชื่อที่ตรงกับผู้ออกแบบในรายชื่อ บันทึกเป็นชื่อมาตรฐาน งานจึงนับเข้าภาระงานของคนนั้นเสมอ
+  var name = resolveAssignee_(assignee);
+  var before = str_(req.assignedTo);
   update_(SHEET.REQUESTS, req._row, { assignedTo: name, updatedAt: nowIso_(), updatedBy: str_(actor) });
   logTimeline_(jobId, actor, 'ASSIGN', '', '', 'มอบหมายให้ ' + (name || '(ไม่ระบุ)'));
-  return getRequest_(jobId);
+  var updated = getRequest_(jobId);
+  var designer = name ? findDesigner_(name) : null;
+  if (designer && designer.email && designerKey_(before) !== designerKey_(name)) {
+    try {
+      sendAssignedEmail_(updated, designer, actor);
+    } catch (err) {
+      logTimeline_(jobId, 'system', 'EMAIL_ERROR', '', '', 'แจ้งผู้ออกแบบไม่สำเร็จ: ' + err.message);
+    }
+  }
+  return updated;
 }
 
 /** ปรับจำนวนรอบแก้ไขสูงสุดของงานใบนี้ */
@@ -2950,6 +2992,7 @@ function sendConfirmationEmail_(req) {
       ['หน่วยงาน', escapeHtml_(req.department)],
       ['วันที่ยื่นคำขอ', escapeHtml_(formatThaiDate_(req.createdAt, true))],
       ['กำหนดใช้งาน', escapeHtml_(formatThaiDate_(req.dueDate))],
+      ['ผู้ออกแบบที่เลือก', str_(req.assignedTo) ? escapeHtml_(req.assignedTo) : 'ให้ฝ่ายสื่อสารองค์กรจัดสรรให้'],
       ['ไฟล์แนบ', int_(req.attachmentCount) + ' ไฟล์']
     ]) +
     '<div style="font-weight:600;margin-bottom:4px;">รายการชิ้นงานที่ขอรับบริการ</div>' +
@@ -3061,6 +3104,23 @@ function sendRequestEditedEmail_(req, changes) {
 
 /* --------------------------------------------------- อีเมลถึงเจ้าหน้าที่ */
 
+/** แจ้งผู้ออกแบบเมื่อมีงานมอบหมายให้ (เฉพาะผู้ออกแบบที่ใส่อีเมลไว้) */
+function sendAssignedEmail_(req, designer, actor) {
+  var adminUrl = adminJobUrl_(req.jobId);
+  var body =
+    '<p>เรียน คุณ' + escapeHtml_(designer.name) + '</p>' +
+    '<p>มีงานออกแบบมอบหมายให้ท่าน' + (actor ? ' โดย ' + escapeHtml_(actor) : '') + '</p>' +
+    emailTable_([
+      ['เลขที่คำขอ', '<strong>' + escapeHtml_(req.jobId) + '</strong>'],
+      ['ชื่อโครงการ', escapeHtml_(req.projectName)],
+      ['สถานะ', escapeHtml_(statusInfo_(req.status).label)],
+      ['กำหนดใช้งาน', escapeHtml_(formatThaiDate_(req.dueDate))]
+    ]) +
+    '<div style="font-weight:600;margin-bottom:4px;">รายการชิ้นงาน</div>' + deliverablesHtml_(req.jobId);
+  return sendMail_(designer.email, '[' + req.jobId + '] มอบหมายงานให้คุณ — ' + str_(req.projectName),
+    emailShell_('มีงานมอบหมายให้คุณ', req.projectName, body, adminUrl ? 'เปิดคำขอนี้' : '', adminUrl));
+}
+
 /** แจ้งเจ้าหน้าที่เมื่อผู้ขอส่งข้อมูลเพิ่มเติมผ่านระบบ */
 function sendInfoReplyToStaffEmail_(req, reply) {
   var to = staffRecipients_();
@@ -3102,6 +3162,9 @@ function sendLowRatingEmail_(req, rating, comment) {
 /** แจ้งเจ้าหน้าที่เมื่อมีคำขอใหม่ */
 function sendStaffNewRequestEmail_(req) {
   var to = staffRecipients_();
+  // ผู้ขอเลือกผู้ออกแบบไว้ และผู้ออกแบบมีอีเมล ให้ได้รับแจ้งด้วย
+  var designer = str_(req.assignedTo) ? findDesigner_(req.assignedTo) : null;
+  if (designer && designer.email && to.indexOf(designer.email) < 0) to.push(designer.email);
   if (to.length === 0) return false;
   var p = priorityInfo_(req.priority);
   var adminUrl = adminJobUrl_(req.jobId);
@@ -3113,6 +3176,8 @@ function sendStaffNewRequestEmail_(req) {
         ';color:#fff;border-radius:20px;padding:3px 14px;font-size:12px;">' + escapeHtml_(p.label) + '</span>'],
       ['ชื่อโครงการ', escapeHtml_(req.projectName)],
       ['ผู้ขอรับบริการ', escapeHtml_(req.requesterName) + ' (' + escapeHtml_(req.department) + ')'],
+      ['ผู้ออกแบบที่ผู้ขอเลือก', str_(req.assignedTo) ? '<strong>' + escapeHtml_(req.assignedTo) + '</strong>'
+        : 'ไม่ระบุ (ให้ฝ่ายฯ จัดสรร)'],
       ['ติดต่อ', escapeHtml_(req.requesterEmail) + ' / ' + escapeHtml_(phoneOut_(req.requesterPhone))],
       ['กำหนดใช้งาน', escapeHtml_(formatThaiDate_(req.dueDate))],
       ['ไฟล์แนบ', int_(req.attachmentCount) + ' ไฟล์'],
@@ -4168,6 +4233,8 @@ function bootstrapData_() {
       return { key: k, label: STATUS[k].label, color: STATUS[k].color, icon: STATUS[k].icon };
     }),
     resourceCategories: RESOURCE_CATEGORIES,
+    designers: listDesigners_(false).map(designerPublic_),
+    designerPalette: DESIGNER_COLORS,
     settings: {
       revisionLimit: getSettingInt_('revisionLimit', 3),
       minLeadDays: getSettingInt_('minLeadDays', 7),
@@ -4176,6 +4243,7 @@ function bootstrapData_() {
       maxFiles: getSettingInt_('maxFiles', 8),
       allowedFileTypes: getSetting_('allowedFileTypes', DEFAULT_SETTINGS.allowedFileTypes),
       formOpen: getSettingBool_('publicFormOpen', true),
+      publicWorkload: getSettingBool_('publicWorkload', true),
       closedMessage: getSetting_('closedMessage', DEFAULT_SETTINGS.closedMessage),
       contactEmail: getSetting_('replyTo', DEFAULT_SETTINGS.replyTo)
     }
@@ -4559,6 +4627,39 @@ function apiAdminDeleteResource(token, id) {
     requireAuth_(token);
     deleteResource_(id);
     return { items: listResources_(true) };
+  });
+}
+
+/* ---------------------------------------------- ผู้ออกแบบและคิวงานสาธารณะ */
+
+/** ภาระงาน ปฏิทิน และตารางงานที่กำลังทำ สำหรับหน้ายื่นคำขอ (ไม่ต้องเข้าสู่ระบบ ไม่มีข้อมูลผู้ขอ) */
+function apiPublicWorkload() {
+  return respond_(publicWorkload_);
+}
+
+/** รายชื่อผู้ออกแบบพร้อมภาระงาน (เจ้าหน้าที่ทุกคนดูได้ ใช้ในปุ่มมอบหมาย) */
+function apiAdminDesigners(token) {
+  return respond_(function () {
+    requireAuth_(token);
+    return adminDesigners_();
+  });
+}
+
+function apiAdminSaveDesigner(token, payload) {
+  return respond_(function () {
+    requireAdmin_(token);
+    var result = saveDesigner_(payload);
+    result.list = adminDesigners_();
+    result.designers = listDesigners_(false).map(designerPublic_);
+    return result;
+  });
+}
+
+function apiAdminDeleteDesigner(token, id) {
+  return respond_(function () {
+    requireAdmin_(token);
+    deleteDesigner_(id);
+    return { list: adminDesigners_(), designers: listDesigners_(false).map(designerPublic_) };
   });
 }
 
@@ -5294,6 +5395,7 @@ function runArchive_(cutoff, actor) {
       deleteDataRows_(sh, 2 + keep.length, values.length - keep.length, cols.length);
     }
 
+    bustPublicCache_();
     logTimeline_('SYSTEM', actor, 'ARCHIVE', '', '',
       'ย้ายคำขอที่ปิดงานก่อน ' + formatThaiDate_(cutoff) + ' จำนวน ' + candidates.length +
       ' รายการไปเก็บถาวร');
@@ -5304,5 +5406,329 @@ function runArchive_(cutoff, actor) {
 /** ข้อมูลสรุปของที่เก็บถาวรสำหรับหน้าตั้งค่า */
 function archiveInfo_() {
   return { archiveUrl: archiveUrl_(), archivedCount: readArchive_(SHEET.REQUESTS).length };
+}
+
+
+/* ==========================================================================
+   14_Designers.gs
+   ========================================================================== */
+
+/**
+ * 14_Designers.gs — รายชื่อผู้ออกแบบ การเลือกผู้ออกแบบ และคิวงานสาธารณะ
+ *
+ * ผู้ขอเลือกผู้ออกแบบเองได้ตอนยื่นคำขอ (หรือให้ฝ่ายฯ จัดสรรให้)
+ * งานผูกกับผู้ออกแบบผ่านช่อง assignedTo ของคำขอ (เก็บชื่อผู้ออกแบบ) ซึ่งเจ้าหน้าที่เปลี่ยนได้ด้วยปุ่ม "มอบหมาย"
+ * เมื่อเปลี่ยนชื่อผู้ออกแบบ ระบบเปลี่ยนชื่อในงานที่ผูกอยู่ให้ด้วย งานจึงไม่หลุดจากผู้ออกแบบ
+ *
+ * หน้ายื่นคำขอแสดงภาระงานของแต่ละคน ปฏิทิน และตารางงานที่กำลังทำ
+ * ข้อมูลส่วนนั้นเปิดให้ทุกคนเห็น จึงส่งเฉพาะชื่อโครงการ กำหนดใช้งาน สถานะ และผู้ออกแบบ
+ * ไม่ส่งชื่อ อีเมล หรือเบอร์โทรของผู้ขอเด็ดขาด
+ */
+
+var PUBLIC_WORKLOAD_CACHE_KEY = 'public:workload:v1';
+var DEFAULT_DESIGNER_CAPACITY = 6;
+
+/** คีย์สำหรับเทียบชื่อ ไม่สนช่องว่างซ้ำและตัวพิมพ์ใหญ่เล็ก */
+function designerKey_(name) {
+  return str_(name).replace(/\s+/g, ' ').toLowerCase();
+}
+
+function designerRecord_(r, index) {
+  var color = str_(r.color);
+  if (!/^#[0-9a-fA-F]{6}$/.test(color)) color = DESIGNER_COLORS[index % DESIGNER_COLORS.length];
+  var name = str_(r.name);
+  return {
+    id: str_(r.id),
+    name: name,
+    shortName: str_(r.shortName) || name.split(' ')[0],
+    shortNameAuto: !str_(r.shortName),
+    specialty: str_(r.specialty),
+    color: color.toLowerCase(),
+    email: str_(r.email),
+    capacity: Math.max(1, int_(r.capacity, DEFAULT_DESIGNER_CAPACITY) || DEFAULT_DESIGNER_CAPACITY),
+    accepting: str_(r.accepting).toUpperCase() !== 'FALSE',
+    active: str_(r.active).toUpperCase() !== 'FALSE',
+    sortOrder: int_(r.sortOrder, 0),
+    _row: r._row
+  };
+}
+
+/** รายชื่อผู้ออกแบบเรียงตามลำดับ (includeInactive = รวมคนที่ซ่อนไว้ สำหรับหน้าตั้งค่า) */
+function listDesigners_(includeInactive) {
+  var rows = readAll_(SHEET.DESIGNERS).slice().sort(function (a, b) {
+    var d = int_(a.sortOrder, 0) - int_(b.sortOrder, 0);
+    if (d !== 0) return d;
+    var x = str_(a.createdAt);
+    var y = str_(b.createdAt);
+    return x === y ? 0 : (x < y ? -1 : 1);
+  });
+  return rows.map(designerRecord_).filter(function (d) { return includeInactive || d.active; });
+}
+
+/** ข้อมูลที่เปิดเผยได้ (ไม่มีอีเมล) */
+function designerPublic_(d) {
+  return {
+    id: d.id, name: d.name, shortName: d.shortName, specialty: d.specialty,
+    color: d.color, accepting: d.accepting, capacity: d.capacity
+  };
+}
+
+/** หาผู้ออกแบบจาก id หรือชื่อ (รวมคนที่ซ่อนไว้) */
+function findDesigner_(idOrName) {
+  var key = designerKey_(idOrName);
+  if (!key) return null;
+  var all = listDesigners_(true);
+  for (var i = 0; i < all.length; i++) {
+    if (all[i].id === str_(idOrName) || designerKey_(all[i].name) === key) return all[i];
+  }
+  return null;
+}
+
+/** ชื่อที่จะบันทึกเป็นผู้รับผิดชอบ ถ้าตรงกับผู้ออกแบบในรายชื่อให้ใช้ชื่อมาตรฐานของคนนั้น */
+function resolveAssignee_(text) {
+  var d = findDesigner_(text);
+  return d ? d.name : truncate_(str_(text).replace(/\s+/g, ' '), 150);
+}
+
+/** ผู้ออกแบบที่ผู้ขอเลือกตอนยื่นคำขอ (ว่าง = ให้ฝ่ายฯ จัดสรรให้) */
+function requesterDesigner_(designerId) {
+  var id = str_(designerId);
+  if (!id) return null;
+  var d = findDesigner_(id);
+  var e = null;
+  if (!d || !d.active || d.id !== id) {
+    e = appError_('ผู้ออกแบบที่เลือกไม่อยู่ในรายชื่อแล้ว กรุณาเลือกใหม่ หรือเลือก "ให้ฝ่ายฯ จัดสรรให้"');
+  } else if (!d.accepting) {
+    e = appError_(d.name + ' งดรับงานใหม่ชั่วคราว กรุณาเลือกผู้ออกแบบคนอื่น หรือเลือก "ให้ฝ่ายฯ จัดสรรให้"');
+  }
+  if (e) {
+    e.code = 'DESIGNER'; // หน้าเว็บใช้รหัสนี้พากลับไปเลือกผู้ออกแบบใหม่พร้อมรายชื่อล่าสุด
+    throw e;
+  }
+  return d;
+}
+
+/**
+ * ผู้ออกแบบของงานสำหรับหน้าติดตามของผู้ขอ
+ * แสดงเฉพาะชื่อที่อยู่ในรายชื่อผู้ออกแบบ (ซึ่งเปิดเผยบนคิวงานอยู่แล้ว)
+ * ชื่ออื่นที่เจ้าหน้าที่พิมพ์เอง เช่น ฟรีแลนซ์ภายนอก ถือเป็นข้อมูลภายใน
+ */
+function publicDesignerOf_(assignedTo) {
+  var name = str_(assignedTo);
+  if (!name) return null;
+  var d = findDesigner_(name);
+  if (!d || designerKey_(d.name) !== designerKey_(name)) return null;
+  return { name: d.name, color: d.color };
+}
+
+/** งานที่กำลังดำเนินการ (ยื่นแล้ว และยังไม่ส่งมอบหรือยกเลิก) */
+function activeJobRows_() {
+  return readAll_(SHEET.REQUESTS).filter(function (r) {
+    var st = str_(r.status);
+    return str_(r.submittedAt) && st !== STATUS.DELIVERED.key && st !== STATUS.CANCELLED.key;
+  });
+}
+
+/** ระดับความหนักของงานเทียบกับจำนวนงานที่รับได้พร้อมกัน */
+function loadLevel_(count, capacity) {
+  var pct = capacity > 0 ? Math.round((count / capacity) * 100) : 0;
+  if (count === 0) return { pct: 0, level: 'free', label: 'ว่าง' };
+  if (pct < 40) return { pct: pct, level: 'free', label: 'งานน้อย' };
+  if (pct < 75) return { pct: pct, level: 'normal', label: 'ปานกลาง' };
+  if (pct < 100) return { pct: pct, level: 'busy', label: 'ค่อนข้างมาก' };
+  return { pct: pct, level: 'full', label: 'เต็ม' };
+}
+
+/**
+ * ภาระงานของผู้ออกแบบแต่ละคน และงานที่ยังไม่มีผู้รับผิดชอบ
+ * งานที่ชื่อผู้รับผิดชอบไม่ตรงกับใครในรายชื่อนับเป็น "ยังไม่ระบุ"
+ */
+function computeWorkload_(designers, rows) {
+  var byKey = {};
+  var stats = designers.map(function (d) {
+    var s = { designer: d, active: 0, dueSoon: 0, overdue: 0 };
+    byKey[designerKey_(d.name)] = s;
+    return s;
+  });
+  var other = { active: 0, dueSoon: 0, overdue: 0 };
+  var today = new Date();
+  var jobs = rows.map(function (r) {
+    var s = byKey[designerKey_(r.assignedTo)] || null;
+    var bucket = s || other;
+    var left = daysBetween_(today, r.dueDate);
+    bucket.active++;
+    if (left !== null && left < 0) bucket.overdue++;
+    else if (left !== null && left <= 7) bucket.dueSoon++;
+    return { row: r, designer: s ? s.designer : null, daysLeft: left };
+  });
+  return { stats: stats, other: other, jobs: jobs };
+}
+
+/**
+ * คิวงานสาธารณะสำหรับหน้ายื่นคำขอ แคชไว้ 1 นาที (ล้างทันทีเมื่อมีการเปลี่ยนแปลงคำขอหรือรายชื่อ)
+ */
+function publicWorkload_() {
+  if (!getSettingBool_('publicWorkload', true)) return { enabled: false };
+  var cache = CacheService.getScriptCache();
+  var hit = cache.get(PUBLIC_WORKLOAD_CACHE_KEY);
+  if (hit) {
+    try { return JSON.parse(hit); } catch (err) { /* แคชเสีย คำนวณใหม่ */ }
+  }
+
+  var designers = listDesigners_(false);
+  var w = computeWorkload_(designers, activeJobRows_());
+  var result = {
+    enabled: true,
+    generatedAt: nowIso_(),
+    designers: w.stats.map(function (s) {
+      var lv = loadLevel_(s.active, s.designer.capacity);
+      var out = designerPublic_(s.designer);
+      out.active = s.active;
+      out.dueSoon = s.dueSoon;
+      out.overdue = s.overdue;
+      out.loadPct = lv.pct;
+      out.level = lv.level;
+      out.levelLabel = lv.label;
+      return out;
+    }),
+    unassigned: { active: w.other.active, dueSoon: w.other.dueSoon, color: UNASSIGNED_COLOR },
+    jobs: w.jobs.map(function (j) {
+      var info = statusInfo_(j.row.status);
+      return {
+        projectName: truncate_(j.row.projectName, 120),
+        dueDate: str_(j.row.dueDate).substring(0, 10),
+        daysLeft: j.daysLeft,
+        status: info.key,
+        statusLabel: info.label,
+        statusColor: info.color,
+        designerId: j.designer ? j.designer.id : '',
+        designerName: j.designer ? j.designer.name : '',
+        color: j.designer ? j.designer.color : UNASSIGNED_COLOR
+      };
+    }).sort(function (a, b) {
+      return a.dueDate === b.dueDate ? 0 : (a.dueDate < b.dueDate ? -1 : 1);
+    })
+  };
+  try {
+    cache.put(PUBLIC_WORKLOAD_CACHE_KEY, JSON.stringify(result), 60);
+  } catch (err) {
+    // ข้อมูลใหญ่เกินที่แคชรับได้ ก็ส่งค่าที่คำนวณสด ๆ ไปเลย
+  }
+  return result;
+}
+
+/** ล้างแคชคิวงานสาธารณะ (เรียกทุกครั้งที่คำขอหรือรายชื่อผู้ออกแบบเปลี่ยน) */
+function bustPublicCache_() {
+  try {
+    CacheService.getScriptCache().remove(PUBLIC_WORKLOAD_CACHE_KEY);
+  } catch (err) {
+    // แคชหมดอายุเองใน 1 นาทีอยู่แล้ว
+  }
+}
+
+/** รายชื่อผู้ออกแบบพร้อมภาระงาน สำหรับหน้าเจ้าหน้าที่ */
+function adminDesigners_() {
+  var all = listDesigners_(true);
+  var w = computeWorkload_(all, activeJobRows_());
+  var known = {};
+  all.forEach(function (d) { known[designerKey_(d.name)] = true; });
+  // ชื่อที่เคยมอบหมายงานแต่ยังไม่อยู่ในรายชื่อ ช่วยให้เพิ่มคนเดิมแล้วงานเดิมผูกให้ทันที
+  var suggest = {};
+  readAll_(SHEET.REQUESTS).forEach(function (r) {
+    var name = str_(r.assignedTo).replace(/\s+/g, ' ');
+    if (!name || known[designerKey_(name)]) return;
+    suggest[name] = (suggest[name] || 0) + 1;
+  });
+  return {
+    designers: w.stats.map(function (s) {
+      var lv = loadLevel_(s.active, s.designer.capacity);
+      var d = s.designer;
+      return {
+        id: d.id, name: d.name, shortName: d.shortName, shortNameAuto: d.shortNameAuto, specialty: d.specialty,
+        color: d.color, email: d.email, capacity: d.capacity, accepting: d.accepting, active: d.active, sortOrder: d.sortOrder,
+        activeJobs: s.active, dueSoon: s.dueSoon, overdue: s.overdue, loadPct: lv.pct, levelLabel: lv.label
+      };
+    }),
+    unassigned: w.other.active,
+    suggestions: Object.keys(suggest).map(function (n) { return { name: n, jobs: suggest[n] }; }),
+    palette: DESIGNER_COLORS
+  };
+}
+
+/**
+ * เพิ่มหรือแก้ไขผู้ออกแบบ
+ * เปลี่ยนชื่อแล้ว งานที่ผูกกับชื่อเดิมจะเปลี่ยนเป็นชื่อใหม่ให้ด้วย
+ */
+function saveDesigner_(payload, actor) {
+  var p = payload || {};
+  var name = truncate_(str_(pick_(p, 'name', '')).replace(/\s+/g, ' '), 80);
+  if (name.length < 2) throw appError_('กรุณากรอกชื่อผู้ออกแบบ');
+  var email = str_(pick_(p, 'email', '')).toLowerCase();
+  if (email && !isValidEmail_(email)) throw appError_('อีเมลไม่ถูกต้อง ถ้าไม่ต้องการให้ระบบแจ้งเตือนให้เว้นว่าง');
+  var color = str_(p.color).toLowerCase();
+  if (color && !/^#[0-9a-f]{6}$/.test(color)) throw appError_('สีไม่ถูกต้อง กรุณาเลือกจากชุดสี');
+  var capacity = int_(p.capacity, DEFAULT_DESIGNER_CAPACITY);
+  if (capacity < 1 || capacity > 50) throw appError_('จำนวนงานที่รับได้พร้อมกันต้องอยู่ระหว่าง 1 ถึง 50');
+
+  return withLock_(function () {
+    var id = str_(p.id);
+    var all = listDesigners_(true);
+    var existing = null;
+    for (var i = 0; i < all.length; i++) {
+      if (id && all[i].id === id) existing = all[i];
+      else if (designerKey_(all[i].name) === designerKey_(name)) {
+        throw appError_('มีผู้ออกแบบชื่อ "' + all[i].name + '" อยู่แล้ว');
+      }
+    }
+    if (id && !existing) throw appError_('ไม่พบผู้ออกแบบคนนี้ อาจถูกลบไปแล้ว กรุณารีเฟรชหน้า');
+
+    var record = {
+      name: name,
+      shortName: truncate_(pick_(p, 'shortName', ''), 30),
+      specialty: truncate_(pick_(p, 'specialty', ''), 200),
+      color: color || (existing ? existing.color : DESIGNER_COLORS[all.length % DESIGNER_COLORS.length]),
+      email: email,
+      capacity: capacity,
+      accepting: p.accepting === false || str_(p.accepting) === 'false' ? 'FALSE' : 'TRUE',
+      active: p.active === false || str_(p.active) === 'false' ? 'FALSE' : 'TRUE',
+      sortOrder: Math.max(0, Math.min(999, int_(p.sortOrder, existing ? existing.sortOrder : all.length))),
+      updatedAt: nowIso_()
+    };
+
+    var renamed = 0;
+    if (existing) {
+      if (designerKey_(existing.name) !== designerKey_(name) || existing.name !== name) {
+        readAll_(SHEET.REQUESTS).forEach(function (r) {
+          if (designerKey_(r.assignedTo) !== designerKey_(existing.name)) return;
+          update_(SHEET.REQUESTS, r._row, { assignedTo: name });
+          renamed++;
+        });
+      }
+      update_(SHEET.DESIGNERS, existing._row, record);
+    } else {
+      record.id = newId_('P');
+      record.createdAt = nowIso_();
+      insert_(SHEET.DESIGNERS, record);
+    }
+    var saved = findDesigner_(existing ? existing.id : record.id);
+    return { designer: saved ? designerPublic_(saved) : null, renamedJobs: renamed };
+  });
+}
+
+/** ลบผู้ออกแบบ (ทำได้เมื่อไม่มีงานที่กำลังทำอยู่) */
+function deleteDesigner_(id) {
+  return withLock_(function () {
+    var d = findDesigner_(id);
+    if (!d || d.id !== str_(id)) throw appError_('ไม่พบผู้ออกแบบคนนี้ อาจถูกลบไปแล้ว กรุณารีเฟรชหน้า');
+    var busy = activeJobRows_().filter(function (r) {
+      return designerKey_(r.assignedTo) === designerKey_(d.name);
+    }).length;
+    if (busy > 0) {
+      throw appError_(d.name + ' ยังมีงานที่กำลังทำอยู่ ' + busy + ' งาน กรุณามอบหมายงานให้คนอื่นก่อน ' +
+        'หรือกด "แก้ไข" แล้วปิด "แสดงให้ผู้ขอเลือก" แทนการลบ');
+    }
+    remove_(SHEET.DESIGNERS, d._row);
+    return true;
+  });
 }
 

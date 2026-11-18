@@ -3,6 +3,11 @@
  * ทุกฟังก์ชันในไฟล์นี้อ่าน/เขียนชีตโดยตรง ส่วน business logic อยู่ที่ไฟล์อื่น
  */
 
+/** ชีตที่เมื่อเปลี่ยนแล้วต้องล้างแคชคิวงานบนหน้ายื่นคำขอ */
+function touchesPublicView_(name) {
+  return name === SHEET.REQUESTS || name === SHEET.DESIGNERS;
+}
+
 /** แคชระดับ execution เดียว ไม่ข้าม request */
 var _cache = { ss: null, sheets: {}, settings: null };
 
@@ -147,6 +152,7 @@ function insert_(name, obj) {
   var sh = sheet_(name);
   var row = objectToRow_(obj, cols);
   sh.appendRow(row);
+  if (touchesPublicView_(name)) bustPublicCache_();
   var saved = {};
   for (var k in obj) if (Object.prototype.hasOwnProperty.call(obj, k)) saved[k] = obj[k];
   saved._row = sh.getLastRow();
@@ -166,11 +172,13 @@ function update_(name, rowIndex, patch) {
     if (idx < 0) continue;
     sh.getRange(rowIndex, idx + 1).setValue(sheetValue_(patch[keys[i]]));
   }
+  if (touchesPublicView_(name)) bustPublicCache_();
 }
 
 /** ลบแถว */
 function remove_(name, rowIndex) {
   deleteDataRows_(sheet_(name), rowIndex, 1, COLUMNS[name].length);
+  if (touchesPublicView_(name)) bustPublicCache_();
 }
 
 /**
@@ -201,6 +209,7 @@ function clearSheetRows_(name) {
   var lastRow = sh.getLastRow();
   if (lastRow < 2) return 0;
   deleteDataRows_(sh, 2, lastRow - 1, COLUMNS[name].length);
+  if (touchesPublicView_(name)) bustPublicCache_();
   return lastRow - 1;
 }
 
@@ -279,6 +288,7 @@ function setSetting_(key, value) {
     insert_(SHEET.SETTINGS, { key: k, value: str_(value), updatedAt: nowIso_() });
   }
   _cache.settings = null;
+  bustPublicCache_(); // เช่น เปิด/ปิดการแสดงคิวงานบนหน้ายื่นคำขอ
 }
 
 /* ---------------------------------------------------------------- Counters */

@@ -166,6 +166,7 @@ function runArchive_(cutoff, actor) {
       deleteDataRows_(sh, 2 + keep.length, values.length - keep.length, cols.length);
     }
 
+    bustPublicCache_();
     logTimeline_('SYSTEM', actor, 'ARCHIVE', '', '',
       'ย้ายคำขอที่ปิดงานก่อน ' + formatThaiDate_(cutoff) + ' จำนวน ' + candidates.length +
       ' รายการไปเก็บถาวร');

@@ -170,6 +170,7 @@ function sendConfirmationEmail_(req) {
       ['หน่วยงาน', escapeHtml_(req.department)],
       ['วันที่ยื่นคำขอ', escapeHtml_(formatThaiDate_(req.createdAt, true))],
       ['กำหนดใช้งาน', escapeHtml_(formatThaiDate_(req.dueDate))],
+      ['ผู้ออกแบบที่เลือก', str_(req.assignedTo) ? escapeHtml_(req.assignedTo) : 'ให้ฝ่ายสื่อสารองค์กรจัดสรรให้'],
       ['ไฟล์แนบ', int_(req.attachmentCount) + ' ไฟล์']
     ]) +
     '<div style="font-weight:600;margin-bottom:4px;">รายการชิ้นงานที่ขอรับบริการ</div>' +
@@ -281,6 +282,23 @@ function sendRequestEditedEmail_(req, changes) {
 
 /* --------------------------------------------------- อีเมลถึงเจ้าหน้าที่ */
 
+/** แจ้งผู้ออกแบบเมื่อมีงานมอบหมายให้ (เฉพาะผู้ออกแบบที่ใส่อีเมลไว้) */
+function sendAssignedEmail_(req, designer, actor) {
+  var adminUrl = adminJobUrl_(req.jobId);
+  var body =
+    '<p>เรียน คุณ' + escapeHtml_(designer.name) + '</p>' +
+    '<p>มีงานออกแบบมอบหมายให้ท่าน' + (actor ? ' โดย ' + escapeHtml_(actor) : '') + '</p>' +
+    emailTable_([
+      ['เลขที่คำขอ', '<strong>' + escapeHtml_(req.jobId) + '</strong>'],
+      ['ชื่อโครงการ', escapeHtml_(req.projectName)],
+      ['สถานะ', escapeHtml_(statusInfo_(req.status).label)],
+      ['กำหนดใช้งาน', escapeHtml_(formatThaiDate_(req.dueDate))]
+    ]) +
+    '<div style="font-weight:600;margin-bottom:4px;">รายการชิ้นงาน</div>' + deliverablesHtml_(req.jobId);
+  return sendMail_(designer.email, '[' + req.jobId + '] มอบหมายงานให้คุณ — ' + str_(req.projectName),
+    emailShell_('มีงานมอบหมายให้คุณ', req.projectName, body, adminUrl ? 'เปิดคำขอนี้' : '', adminUrl));
+}
+
 /** แจ้งเจ้าหน้าที่เมื่อผู้ขอส่งข้อมูลเพิ่มเติมผ่านระบบ */
 function sendInfoReplyToStaffEmail_(req, reply) {
   var to = staffRecipients_();
@@ -322,6 +340,9 @@ function sendLowRatingEmail_(req, rating, comment) {
 /** แจ้งเจ้าหน้าที่เมื่อมีคำขอใหม่ */
 function sendStaffNewRequestEmail_(req) {
   var to = staffRecipients_();
+  // ผู้ขอเลือกผู้ออกแบบไว้ และผู้ออกแบบมีอีเมล ให้ได้รับแจ้งด้วย
+  var designer = str_(req.assignedTo) ? findDesigner_(req.assignedTo) : null;
+  if (designer && designer.email && to.indexOf(designer.email) < 0) to.push(designer.email);
   if (to.length === 0) return false;
   var p = priorityInfo_(req.priority);
   var adminUrl = adminJobUrl_(req.jobId);
@@ -333,6 +354,8 @@ function sendStaffNewRequestEmail_(req) {
         ';color:#fff;border-radius:20px;padding:3px 14px;font-size:12px;">' + escapeHtml_(p.label) + '</span>'],
       ['ชื่อโครงการ', escapeHtml_(req.projectName)],
       ['ผู้ขอรับบริการ', escapeHtml_(req.requesterName) + ' (' + escapeHtml_(req.department) + ')'],
+      ['ผู้ออกแบบที่ผู้ขอเลือก', str_(req.assignedTo) ? '<strong>' + escapeHtml_(req.assignedTo) + '</strong>'
+        : 'ไม่ระบุ (ให้ฝ่ายฯ จัดสรร)'],
       ['ติดต่อ', escapeHtml_(req.requesterEmail) + ' / ' + escapeHtml_(phoneOut_(req.requesterPhone))],
       ['กำหนดใช้งาน', escapeHtml_(formatThaiDate_(req.dueDate))],
       ['ไฟล์แนบ', int_(req.attachmentCount) + ' ไฟล์'],

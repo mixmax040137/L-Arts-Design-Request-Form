@@ -142,6 +142,8 @@ function createRequest_(payload) {
     throw appError_(getSetting_('closedMessage', 'ขณะนี้ระบบปิดรับคำขอชั่วคราว'));
   }
   var data = validateRequestPayload_(payload);
+  // ผู้ออกแบบที่ผู้ขอเลือก (ไม่เลือก = ให้ฝ่ายฯ จัดสรรให้) ตรวจก่อนออกเลขที่ เพื่อไม่ให้เลขที่ถูกใช้ไปเปล่า ๆ
+  var designer = requesterDesigner_(pick_(payload, 'designerId', ''));
 
   return withLock_(function () {
     var jobId = newJobId_();
@@ -181,7 +183,7 @@ function createRequest_(payload) {
       draftUrl: '',
       revisionCount: 0,
       revisionLimit: revisionLimit,
-      assignedTo: '',
+      assignedTo: designer ? designer.name : '',
       submittedAt: '',
       startedAt: '',
       firstDraftAt: '',
@@ -210,10 +212,14 @@ function createRequest_(payload) {
     }
 
     logTimeline_(jobId, data.requesterName, 'CREATE', '', STATUS.NEW.key, 'ผู้ขอรับบริการยื่นคำขอผ่านแบบฟอร์มออนไลน์');
+    if (designer) {
+      logTimeline_(jobId, data.requesterName, 'ASSIGN', '', '', 'ผู้ขอเลือกผู้ออกแบบ: ' + designer.name);
+    }
 
     return {
       jobId: jobId,
       trackToken: row.trackToken,
+      designerName: designer ? designer.name : '',
       folderUrl: folder.url,
       maxFiles: getSettingInt_('maxFiles', 8),
       maxFileMB: getSettingInt_('maxFileMB', 10),
@@ -580,6 +586,9 @@ function getPublicView_(jobId, email, token) {
   var timeline = full.timeline
     .filter(function (t) {
       var a = str_(t.action);
+      // การมอบหมายของเจ้าหน้าที่เป็นข้อมูลภายใน (อาจเป็นชื่อที่พิมพ์เอง) ผู้ขอเห็นผู้ออกแบบจาก designer แทน
+      // ยกเว้นรายการที่ผู้ขอเลือกผู้ออกแบบเองตอนยื่นคำขอ
+      if (a === 'ASSIGN') return str_(t.detail).indexOf('ผู้ขอเลือก') === 0;
       return a !== 'EMAIL_ERROR' && a !== 'NOTE' && a !== 'EDIT' && a !== 'ERROR';
     })
     .map(function (t) {
@@ -608,6 +617,7 @@ function getPublicView_(jobId, email, token) {
     projectName: req.projectName,
     requesterName: req.requesterName,
     department: req.department,
+    designer: publicDesignerOf_(req.assignedTo),
     createdAt: str_(req.createdAt),
     dueDate: str_(req.dueDate),
     deliveredAt: str_(req.deliveredAt),
@@ -742,10 +752,21 @@ function setDraftUrl_(jobId, url, actor) {
 function assignRequest_(jobId, assignee, actor) {
   var req = getRequest_(jobId);
   if (!req) throw appError_('ไม่พบเลขที่คำขอ ' + jobId);
-  var name = truncate_(assignee, 150);
+  // ชื่อที่ตรงกับผู้ออกแบบในรายชื่อ บันทึกเป็นชื่อมาตรฐาน งานจึงนับเข้าภาระงานของคนนั้นเสมอ
+  var name = resolveAssignee_(assignee);
+  var before = str_(req.assignedTo);
   update_(SHEET.REQUESTS, req._row, { assignedTo: name, updatedAt: nowIso_(), updatedBy: str_(actor) });
   logTimeline_(jobId, actor, 'ASSIGN', '', '', 'มอบหมายให้ ' + (name || '(ไม่ระบุ)'));
-  return getRequest_(jobId);
+  var updated = getRequest_(jobId);
+  var designer = name ? findDesigner_(name) : null;
+  if (designer && designer.email && designerKey_(before) !== designerKey_(name)) {
+    try {
+      sendAssignedEmail_(updated, designer, actor);
+    } catch (err) {
+      logTimeline_(jobId, 'system', 'EMAIL_ERROR', '', '', 'แจ้งผู้ออกแบบไม่สำเร็จ: ' + err.message);
+    }
+  }
+  return updated;
 }
 
 /** ปรับจำนวนรอบแก้ไขสูงสุดของงานใบนี้ */

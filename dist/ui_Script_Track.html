@@ -188,6 +188,13 @@ var Track = (function () {
           App.esc(view.projectName) + '</div>' +
         '<div style="font-size:.85rem;color:var(--text-light)">' +
           App.esc(view.requesterName) + ' &middot; ' + App.esc(view.department) + '</div>' +
+        (view.designer
+          ? '<div class="d-flex align-items-center gap-2 mt-1" style="font-size:.85rem">' +
+            '<i class="cdot" style="--c:' + App.esc(view.designer.color) + '"></i>ผู้ออกแบบ ' +
+            '<strong style="font-weight:500">' + App.esc(view.designer.name) + '</strong></div>'
+          : (view.status !== 'DELIVERED' && view.status !== 'CANCELLED'
+            ? '<div class="d-flex align-items-center gap-2 mt-1" style="font-size:.85rem;color:var(--text-light)">' +
+              '<i class="cdot" style="--c:#94a3b8"></i>รอจัดสรรผู้ออกแบบ</div>' : '')) +
         stepperHtml(view) +
         '<div class="row g-3 mt-1 pt-3" style="border-top:1px solid var(--border)">' +
           '<div class="col-6 col-md-3"><div class="detail-label">วันที่ยื่นคำขอ</div>' +

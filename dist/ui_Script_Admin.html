@@ -15,6 +15,8 @@ var Admin = (function () {
   var pendingJob = '';
   var usersCache = [];
   var lastCsv = '';
+  var designerData = null;   // รายชื่อผู้ออกแบบพร้อมภาระงาน (apiAdminDesigners)
+  var designerLoadedAt = 0;
 
   /* ------------------------------------------------------------- Session */
 
@@ -272,7 +274,7 @@ var Admin = (function () {
         '<td class="q-status"><span class="badge-status" style="background:' + r.statusColor + '">' +
           App.esc(r.statusLabel) + '</span>' +
           (r.submitted ? '' : '<div class="row-sub"><i class="bi bi-hourglass me-1"></i>กำลังแนบไฟล์</div>') +
-          (r.assignedTo ? '<div class="row-sub"><i class="bi bi-person me-1"></i>' + App.esc(r.assignedTo) + '</div>' : '') +
+          (r.assignedTo ? '<div class="row-sub d-flex align-items-center gap-1">' + assigneeHtml(r.assignedTo) + '</div>' : '') +
         '</td>' +
         '<td class="q-pri"><span style="color:' + r.priorityColor + ';font-size:.82rem">' +
           (r.overdue ? '<i class="bi bi-exclamation-triangle-fill me-1"></i>' : '') +
@@ -427,8 +429,8 @@ var Admin = (function () {
             '<span class="badge-soft">แก้ไข ' + r.revisionCount + '/' + r.revisionLimit + ' รอบ</span>' +
             (r.approved ? '<span class="badge-ok" title="อนุมัติเมื่อ ' + App.esc(App.thaiDate(r.approvedAt, true)) + '">' +
               '<i class="bi bi-hand-thumbs-up-fill me-1"></i>ผู้ขออนุมัติร่างแล้ว พร้อมส่งมอบ</span>' : '') +
-            (r.assignedTo ? '<span class="badge-soft"><i class="bi bi-person-check me-1"></i>' +
-              App.esc(r.assignedTo) + '</span>' : '') +
+            (r.assignedTo ? '<span class="badge-soft d-inline-flex align-items-center gap-1">' +
+              assigneeHtml(r.assignedTo) + '</span>' : '') +
           '</div>' +
           (ro ? '<div class="archived-banner mb-3"><i class="bi bi-archive me-1"></i>' +
             'งานนี้ย้ายไปเก็บถาวรแล้ว ดูข้อมูลได้อย่างเดียว แก้ไขหรือเปลี่ยนสถานะไม่ได้</div>' : statusPicker) +
@@ -729,7 +731,7 @@ var Admin = (function () {
   /* ------------------------------------------------------------- ปฏิทิน */
 
   var calMonth = null;
-  var calOpts = { due: true, event: true, draft: true, closed: false };
+  var calOpts = { due: true, event: true, draft: true, closed: false, byDesigner: false };
   var TH_MONTHS = ['มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
     'กรกฎาคม', 'สิงหาคม', 'กันยายน', 'ตุลาคม', 'พฤศจิกายน', 'ธันวาคม'];
 
@@ -767,7 +769,8 @@ var Admin = (function () {
 
   function evHtml(ev) {
     var r = ev.r;
-    return '<button type="button" class="cal-ev ' + (ev.kind === 'due' ? '' : ev.kind) + '" style="--c:' + r.statusColor +
+    var color = calOpts.byDesigner ? designerColor(r.assignedTo) : r.statusColor;
+    return '<button type="button" class="cal-ev ' + (ev.kind === 'due' ? '' : ev.kind) + '" style="--c:' + color +
       '" title="' + App.esc(ev.text + ': ' + r.jobId + ' ' + r.projectName + ' (' + r.statusLabel + ')') +
       '" onclick="Admin.openJob(\'' + App.esc(r.jobId) + '\')"><i class="bi ' + ev.icon + ' me-1"></i>' +
       App.esc(r.projectName) + '</button>';
@@ -775,25 +778,34 @@ var Admin = (function () {
 
   function workloadHtml() {
     var groups = {};
-    var today = new Date();
+    function group(name) {
+      var k = dKey(name);
+      return groups[k] = groups[k] || { name: name, total: 0, overdue: 0, week: 0, draftLate: 0, d: designerOf(name) };
+    }
+    // ผู้ออกแบบที่ยังไม่มีงานก็แสดง เพื่อให้เห็นว่าใครว่าง
+    (App.getCfg().designers || []).forEach(function (d) { group(d.name); });
     queueCache.filter(function (r) { return !isClosed(r) && r.submitted; }).forEach(function (r) {
-      var k = r.assignedTo || '';
-      var g = groups[k] = groups[k] || { name: k, total: 0, overdue: 0, week: 0, draftLate: 0 };
+      var g = group(r.assignedTo || '');
       g.total++;
       if (r.overdue) g.overdue++;
       if (r.daysLeft !== null && r.daysLeft >= 0 && r.daysLeft <= 7) g.week++;
       if (r.draftOverdue) g.draftLate++;
     });
     var list = Object.keys(groups).map(function (k) { return groups[k]; })
+      .filter(function (g) { return g.name || g.total > 0; })
       .sort(function (a, b) { return (a.name ? 0 : 1) - (b.name ? 0 : 1) || b.total - a.total; });
     if (list.length === 0) return '<div class="row-sub">ยังไม่มีงานที่กำลังดำเนินการ</div>';
     var max = list.reduce(function (m, g) { return Math.max(m, g.total); }, 1);
     return list.map(function (g) {
+      var color = g.d ? g.d.color : (g.name ? '' : '#94a3b8');
       return '<div class="mb-3">' +
-        '<div class="d-flex justify-content-between" style="font-size:.86rem">' +
-          '<span class="fw-semibold">' + (g.name ? App.esc(g.name) : '<span style="color:var(--danger)">ยังไม่มอบหมาย</span>') +
-          '</span><span>' + g.total + ' งาน</span></div>' +
-        '<div class="load-bar my-1"><div style="width:' + Math.round(g.total / max * 100) + '%"></div></div>' +
+        '<div class="d-flex justify-content-between gap-2" style="font-size:.86rem">' +
+          '<span class="fw-semibold d-flex align-items-center gap-2" style="min-width:0">' +
+            (color ? '<i class="cdot" style="--c:' + color + '"></i>' : '') +
+            (g.name ? App.esc(g.name) : '<span style="color:var(--danger)">ยังไม่มอบหมาย</span>') +
+          '</span><span style="white-space:nowrap">' + g.total + (g.d ? ' / ' + g.d.capacity : '') + ' งาน</span></div>' +
+        '<div class="load-bar my-1"><div style="width:' + Math.round(g.total / max * 100) + '%' +
+          (color ? ';background:' + color : '') + '"></div></div>' +
         '<div class="row-sub mt-0">ครบกำหนดใน 7 วัน ' + g.week + ' &middot; ' +
           '<span style="color:' + (g.overdue ? 'var(--danger)' : 'inherit') + '">เกินกำหนด ' + g.overdue + '</span>' +
           (g.draftLate ? ' &middot; <span style="color:#b45309">ร่างแรกเกิน ' + g.draftLate + '</span>' : '') +
@@ -849,12 +861,13 @@ var Admin = (function () {
             '<div>' + toggle('due', '<i class="bi bi-flag-fill"></i> กำหนดใช้งาน') +
               toggle('event', '<i class="bi bi-calendar-event"></i> วันจัดงาน') +
               toggle('draft', '<i class="bi bi-pencil"></i> ส่งร่างแรก') +
-              toggle('closed', 'รวมงานที่ปิดแล้ว') + '</div>' +
+              toggle('closed', 'รวมงานที่ปิดแล้ว') + toggle('byDesigner', 'สีตามผู้ออกแบบ') + '</div>' +
           '</div>' +
           '<div class="cal-head"><div>อา</div><div>จ</div><div>อ</div><div>พ</div><div>พฤ</div><div>ศ</div><div>ส</div></div>' +
           '<div class="cal-grid">' + cells + '</div>' +
           '<div class="cal-agenda">' + (agenda || '<div class="row-sub">ไม่มีงานในเดือนนี้</div>') + '</div>' +
-          '<div class="cal-legend mt-2">สีตามสถานะงาน &middot; ขอบทึบ = กำหนดใช้งาน &middot; ขอบจุด = วันจัดงาน ' +
+          '<div class="cal-legend mt-2">' + (calOpts.byDesigner ? designerLegendHtml() : 'สีตามสถานะงาน') +
+            ' &middot; ขอบทึบ = กำหนดใช้งาน &middot; ขอบจุด = วันจัดงาน ' +
             '&middot; ขอบประ = กำหนดส่งร่างแรก &middot; กดที่งานเพื่อเปิดรายละเอียด</div>' +
         '</div></div>' +
         '<div class="col-lg-3"><div class="card-soft p-3">' +
@@ -1173,20 +1186,285 @@ var Admin = (function () {
     }).catch(handleAuthError);
   }
 
+  /* ------------------------------------------------------- ผู้ออกแบบ */
+
+  /** คีย์เทียบชื่อ ตรงกับ designerKey_ ฝั่งเซิร์ฟเวอร์ */
+  function dKey(name) {
+    return String(name || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
+  /** ผู้ออกแบบจากชื่อในช่องผู้รับผิดชอบ (ใช้รายชื่อเต็มถ้าโหลดแล้ว ซึ่งรวมคนที่ซ่อนไว้) */
+  function designerOf(name) {
+    var k = dKey(name);
+    if (!k) return null;
+    var lists = [(designerData && designerData.designers) || [], App.getCfg().designers || []];
+    for (var l = 0; l < lists.length; l++) {
+      for (var i = 0; i < lists[l].length; i++) if (dKey(lists[l][i].name) === k) return lists[l][i];
+    }
+    return null;
+  }
+
+  function designerColor(name) {
+    var d = designerOf(name);
+    return d ? d.color : '#94a3b8';
+  }
+
+  function assigneeHtml(name) {
+    return '<i class="cdot" style="--c:' + designerColor(name) + ';width:9px;height:9px;flex-basis:9px"></i>' + App.esc(name);
+  }
+
+  function designerLegendHtml() {
+    return (App.getCfg().designers || []).map(function (d) {
+      return '<span class="d-inline-flex align-items-center gap-1"><i class="cdot" style="--c:' + d.color + '"></i>' +
+        App.esc(d.shortName || d.name) + '</span>';
+    }).join(' ') + ' <span class="d-inline-flex align-items-center gap-1"><i class="cdot" style="--c:#94a3b8"></i>ยังไม่มอบหมาย</span>';
+  }
+
+  function loadDesigners(force) {
+    if (designerData && !force && Date.now() - designerLoadedAt < 60000) return Promise.resolve(designerData);
+    return App.api('apiAdminDesigners', [token]).then(function (d) {
+      designerData = d;
+      designerLoadedAt = Date.now();
+      return d;
+    });
+  }
+
+  /** ใช้รายชื่อใหม่ทั่วทั้งหน้า (หน้าตั้งค่า แบบฟอร์ม คิวงานสาธารณะ ปฏิทิน) */
+  function applyDesigners(res) {
+    designerData = res.list;
+    designerLoadedAt = Date.now();
+    App.setDesigners(res.designers);
+    var box = document.getElementById('designers-card');
+    if (box) box.innerHTML = designersCardHtml();
+    if (res.renamedJobs) queueLoadedAt = 0; // ชื่อในงานเปลี่ยน โหลดคิวงานใหม่ครั้งหน้า
+    if (activeTab === 'calendar') renderCalendar();
+  }
+
   function assign() {
-    App.prompt({
-      title: 'มอบหมายผู้รับผิดชอบ',
-      field: {
-        label: 'ชื่อผู้รับผิดชอบ', value: currentJob.request.assignedTo,
-        placeholder: 'เช่น ธิติวุฒิ บุญแก้ว'
+    if (!currentJob) return;
+    var current = currentJob.request.assignedTo || '';
+    App.loading(true, 'กำลังโหลดรายชื่อผู้ออกแบบ...');
+    loadDesigners(false).then(function (data) {
+      App.loading(false);
+      var match = designerOf(current);
+      // คนที่ซ่อนไว้ไม่แสดงให้เลือก ยกเว้นคนที่รับงานนี้อยู่แล้ว
+      var list = data.designers.filter(function (d) { return d.active || (match && match.id === d.id); });
+      var picked = !current ? '' : (match ? match.id : '__other');
+      function opt(value, color, title, sub, extra) {
+        return '<label class="as-opt" style="--c:' + color + '">' +
+          '<input class="form-check-input mt-0" type="radio" name="as-pick" value="' + App.esc(value) + '"' +
+            (picked === value ? ' checked' : '') + ' onchange="Admin.assignPickChange()">' +
+          '<i class="cdot"></i><span class="as-main"><span class="as-title">' + App.esc(title) + '</span>' +
+            (sub ? '<span class="dp-sub">' + sub + '</span>' : '') + '</span>' + (extra || '') + '</label>';
       }
-    }).then(function (name) {
-      if (name === null) return;
+      var html = '<div class="as-list">' +
+        opt('', '#94a3b8', 'ยังไม่มอบหมาย', 'แสดงเป็น "รอจัดสรร" บนคิวงานของผู้ขอ') +
+        list.map(function (d) {
+          var notes = [];
+          if (d.specialty) notes.push(App.esc(d.specialty));
+          if (!d.accepting) notes.push('<span style="color:#b45309">งดรับงานใหม่</span>');
+          if (!d.active) notes.push('ซ่อนจากผู้ขอ');
+          return opt(d.id, d.color, d.name, notes.join(' &middot; '),
+            '<span class="as-load"><span class="mini-bar" style="--c:' + d.color + '"><i style="width:' +
+              Math.min(100, d.loadPct) + '%"></i></span>' + d.activeJobs + '/' + d.capacity + ' งาน</span>');
+        }).join('') +
+        opt('__other', '#cbd5e1', 'ชื่ออื่นที่ไม่อยู่ในรายชื่อ', '') +
+        '</div>' +
+        '<div id="as-other-wrap" class="mt-2' + (picked === '__other' ? '' : ' d-none') + '">' +
+          '<input type="text" class="form-control" id="as-other" maxlength="80" placeholder="พิมพ์ชื่อผู้รับผิดชอบ" value="' +
+            App.esc(picked === '__other' ? current : '') + '"></div>' +
+        (list.length === 0 ? '<div class="form-text mt-2">ยังไม่มีรายชื่อผู้ออกแบบ ผู้ดูแลระบบเพิ่มได้ที่ ตั้งค่า &gt; ผู้ออกแบบ ' +
+          'แล้วผู้ขอจะเลือกผู้ออกแบบได้เองตอนยื่นคำขอ</div>' : '');
+      return App.prompt({ title: 'มอบหมายผู้ออกแบบ', html: html, okLabel: 'บันทึก' }).then(function (ok) {
+        if (!ok) return;
+        var sel = document.querySelector('#genericModal input[name="as-pick"]:checked');
+        var v = sel ? sel.value : '';
+        var name = '';
+        var chosen = null;
+        if (v === '__other') {
+          name = document.getElementById('as-other').value.trim();
+          if (!name) {
+            App.toast('กรุณาพิมพ์ชื่อผู้รับผิดชอบ หรือเลือกจากรายชื่อ', 'err');
+            setTimeout(assign, 400);
+            return;
+          }
+        } else if (v) {
+          chosen = list.filter(function (d) { return d.id === v; })[0];
+          name = chosen ? chosen.name : '';
+        }
+        if (name === current) return;
+        App.loading(true, 'กำลังบันทึก...');
+        return App.api('apiAdminAssign', [token, currentJob.request.jobId, name]).then(function (res) {
+          App.loading(false);
+          designerLoadedAt = 0; // จำนวนงานในมือเปลี่ยน
+          Workload.invalidate();
+          App.toast(name ? 'มอบหมายให้ ' + name + ' เรียบร้อย' +
+            (chosen && chosen.email ? ' ระบบส่งอีเมลแจ้งให้แล้ว' : '') : 'ยกเลิกการมอบหมายเรียบร้อย', 'ok');
+          applyJob(res.job);
+        });
+      });
+    }).catch(handleAuthError);
+  }
+
+  function assignPickChange() {
+    var sel = document.querySelector('#genericModal input[name="as-pick"]:checked');
+    var other = !!(sel && sel.value === '__other');
+    document.getElementById('as-other-wrap').classList.toggle('d-none', !other);
+    if (other) document.getElementById('as-other').focus();
+  }
+
+  function designersCardHtml() {
+    var data = designerData;
+    if (!data) return '';
+    var rows = data.designers.map(function (d) {
+      var state = !d.active ? '<span class="row-sub mt-0">ซ่อนจากผู้ขอ</span>'
+        : (d.accepting ? '<span style="color:var(--success)">รับงาน</span>' : '<span style="color:#b45309">งดรับงานใหม่</span>');
+      return '<tr' + (d.active ? '' : ' style="opacity:.6"') + '>' +
+        '<td><div class="d-flex align-items-center gap-2"><i class="cdot" style="--c:' + d.color + '"></i><div style="min-width:0">' +
+          '<div class="fw-semibold">' + App.esc(d.name) + '</div>' +
+          '<div class="row-sub mt-0">บนปฏิทิน: ' + App.esc(d.shortName) + (d.email ? ' &middot; ' + App.esc(d.email) : '') + '</div></div></div></td>' +
+        '<td style="font-size:.84rem">' + (d.specialty ? App.esc(d.specialty) : '<span class="row-sub">-</span>') + '</td>' +
+        '<td style="min-width:140px"><div class="mini-bar" style="--c:' + d.color + '"><i style="width:' + Math.min(100, d.loadPct) + '%"></i></div>' +
+          '<div class="row-sub mt-1">' + d.activeJobs + ' / ' + d.capacity + ' งาน &middot; ' + App.esc(d.levelLabel) +
+          (d.overdue ? ' &middot; <span style="color:var(--danger)">เกินกำหนด ' + d.overdue + '</span>' : '') + '</div></td>' +
+        '<td style="font-size:.82rem;white-space:nowrap">' + state + '</td>' +
+        '<td class="text-end" style="white-space:nowrap">' +
+          '<button class="btn btn-sm btn-link p-0 me-2" onclick="Admin.editDesigner(\'' + App.esc(d.id) + '\')">แก้ไข</button>' +
+          '<button class="btn btn-sm btn-link p-0 text-danger" onclick="Admin.deleteDesigner(\'' + App.esc(d.id) + '\')">ลบ</button></td></tr>';
+    }).join('');
+    var sugg = data.suggestions || [];
+    return '<div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-2">' +
+        '<div class="fw-semibold"><i class="bi bi-palette me-2" style="color:var(--primary)"></i>ผู้ออกแบบ</div>' +
+        '<button class="btn btn-sm btn-ghost" onclick="Admin.editDesigner(\'\')">' +
+          '<i class="bi bi-person-plus me-1"></i>เพิ่มผู้ออกแบบ</button></div>' +
+      '<div style="font-size:.85rem;color:var(--text-light)" class="mb-3">' +
+        'ผู้ขอเลือกผู้ออกแบบได้เองตอนยื่นคำขอ และเห็นงานในมือของแต่ละคนในคิวงานใต้แบบฟอร์ม ' +
+        '(เห็นชื่อ ความถนัด และสีประจำตัว ไม่เห็นอีเมล) ผู้ออกแบบที่ใส่อีเมลไว้จะได้รับแจ้งเมื่อมีงานใหม่ของตัวเอง' +
+        (data.unassigned ? '<br>งานที่ยังไม่มอบหมาย <strong>' + data.unassigned + ' งาน</strong>' : '') + '</div>' +
+      (rows
+        ? '<div class="table-responsive"><table class="table table-clean mb-0"><thead><tr><th>ชื่อ</th><th>ความถนัด</th>' +
+          '<th>งานในมือ</th><th>สถานะ</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>'
+        : '<div class="empty-state py-3"><i class="bi bi-people"></i><p class="mt-2 mb-0" style="font-size:.88rem">' +
+          'ยังไม่มีรายชื่อผู้ออกแบบ กด "เพิ่มผู้ออกแบบ" เพื่อให้ผู้ขอเลือกได้</p></div>') +
+      (sugg.length ? '<div class="mt-3" style="font-size:.84rem"><div class="mb-1">ชื่อที่เคยมอบหมายงานแต่ยังไม่อยู่ในรายชื่อ ' +
+        'กดเพื่อเพิ่ม งานเดิมจะนับเป็นของคนนั้นทันที</div>' + sugg.map(function (s, i) {
+          return '<button class="btn btn-sm btn-ghost me-1 mb-1" onclick="Admin.addSuggestedDesigner(' + i + ')">' +
+            '<i class="bi bi-plus-lg me-1"></i>' + App.esc(s.name) + ' <span class="row-sub d-inline">(' + s.jobs + ' งาน)</span></button>';
+        }).join('') + '</div>' : '');
+  }
+
+  function addSuggestedDesigner(i) {
+    var s = designerData && designerData.suggestions[i];
+    if (s) editDesigner('', { name: s.name });
+  }
+
+  function editDesigner(id, draft) {
+    var list = (designerData && designerData.designers) || [];
+    var palette = ((designerData && designerData.palette) || App.getCfg().designerPalette || []).slice();
+    var found = list.filter(function (x) { return x.id === id; })[0];
+    var d = {};
+    var base = found || {
+      id: '', name: '', shortName: '', shortNameAuto: true, specialty: '', email: '', color: '',
+      capacity: 6, accepting: true, active: true, sortOrder: list.length
+    };
+    for (var k in base) d[k] = base[k];
+    if (draft) for (var k2 in draft) d[k2] = draft[k2];
+    var usedBy = {};
+    list.forEach(function (x) { if (x.id !== d.id) usedBy[x.color] = x.shortName || x.name; });
+    if (!d.color) d.color = palette.filter(function (c) { return !usedBy[c]; })[0] || palette[list.length % palette.length];
+    if (palette.indexOf(d.color) < 0) palette.push(d.color);
+    var isNew = !d.id;
+    var shortValue = found && found.shortNameAuto && !(draft && 'shortName' in draft) ? '' : d.shortName;
+
+    App.prompt({
+      title: isNew ? 'เพิ่มผู้ออกแบบ' : 'แก้ไข ' + d.name,
+      html:
+        '<div class="mb-2"><label class="form-label" for="ds-name">ชื่อ-นามสกุล<span class="req">*</span></label>' +
+          '<input type="text" class="form-control" id="ds-name" maxlength="80" value="' + App.esc(d.name) +
+          '" placeholder="ชื่อที่ผู้ขอเห็นตอนเลือกผู้ออกแบบ"></div>' +
+        '<div class="row g-2 mb-2">' +
+          '<div class="col-sm-6"><label class="form-label" for="ds-short">ชื่อย่อบนปฏิทิน</label>' +
+            '<input type="text" class="form-control" id="ds-short" maxlength="30" value="' + App.esc(shortValue) +
+            '" placeholder="เว้นว่าง = ใช้ชื่อแรก"></div>' +
+          '<div class="col-sm-6"><label class="form-label" for="ds-email">อีเมล (ไม่บังคับ)</label>' +
+            '<input type="email" class="form-control" id="ds-email" maxlength="120" value="' + App.esc(d.email) +
+            '" placeholder="รับแจ้งเตือนเมื่อมีงานใหม่"></div>' +
+        '</div>' +
+        '<div class="mb-2"><label class="form-label" for="ds-spec">ความถนัด</label>' +
+          '<input type="text" class="form-control" id="ds-spec" maxlength="200" value="' + App.esc(d.specialty) +
+          '" placeholder="เช่น โปสเตอร์ อินโฟกราฟิก ภาพสำหรับโซเชียลมีเดีย"></div>' +
+        '<div class="mb-2"><div class="form-label mb-1">สีประจำตัว</div><div class="swatches">' +
+          palette.map(function (c) {
+            return '<label class="swatch" style="--c:' + c + '" title="' + App.esc(usedBy[c] ? 'ใช้แล้วโดย ' + usedBy[c] : 'ยังไม่มีคนใช้') + '">' +
+              '<input type="radio" name="ds-color" value="' + c + '"' + (c === d.color ? ' checked' : '') + '>' +
+              '<span>' + (usedBy[c] ? '<i class="bi bi-person-fill"></i>' : '') + '</span></label>';
+          }).join('') +
+          '</div><div class="form-text">ใช้แยกงานของแต่ละคนบนปฏิทินและคิวงาน ควรเลือกสีที่ยังไม่มีคนใช้ ' +
+          '(<i class="bi bi-person-fill"></i> = มีคนใช้แล้ว)</div></div>' +
+        '<div class="row g-2 mb-2">' +
+          '<div class="col-6"><label class="form-label" for="ds-cap">รับงานพร้อมกันได้ (งาน)</label>' +
+            '<input type="number" inputmode="numeric" class="form-control" id="ds-cap" min="1" max="50" value="' + (d.capacity || 6) + '">' +
+            '<div class="form-text">ใช้คำนวณแถบความหนักของงาน</div></div>' +
+          '<div class="col-6"><label class="form-label" for="ds-order">ลำดับการแสดง</label>' +
+            '<input type="number" inputmode="numeric" class="form-control" id="ds-order" min="0" max="999" value="' + (d.sortOrder || 0) + '"></div>' +
+        '</div>' +
+        '<div class="form-check form-switch"><input class="form-check-input" type="checkbox" id="ds-accepting"' +
+          (d.accepting !== false ? ' checked' : '') + '><label class="form-check-label" for="ds-accepting">รับงานใหม่</label>' +
+          '<div class="form-text mt-0">ปิดชั่วคราวเมื่อลาหรืองานเต็ม ผู้ขอจะเลือกคนนี้ไม่ได้ แต่ยังเห็นงานในมือ</div></div>' +
+        '<div class="form-check form-switch mt-2"><input class="form-check-input" type="checkbox" id="ds-active"' +
+          (d.active !== false ? ' checked' : '') + '><label class="form-check-label" for="ds-active">แสดงให้ผู้ขอเห็น</label>' +
+          '<div class="form-text mt-0">ปิดเมื่อไม่ได้ปฏิบัติงานแล้ว ประวัติงานเดิมยังอยู่ครบ</div></div>',
+      okLabel: 'บันทึก'
+    }).then(function (ok) {
+      if (!ok) return;
+      var colorEl = document.querySelector('#genericModal input[name="ds-color"]:checked');
+      var payload = {
+        id: d.id,
+        name: document.getElementById('ds-name').value.trim(),
+        shortName: document.getElementById('ds-short').value.trim(),
+        email: document.getElementById('ds-email').value.trim(),
+        specialty: document.getElementById('ds-spec').value.trim(),
+        color: colorEl ? colorEl.value : d.color,
+        capacity: +document.getElementById('ds-cap').value || 0,
+        sortOrder: +document.getElementById('ds-order').value || 0,
+        accepting: document.getElementById('ds-accepting').checked,
+        active: document.getElementById('ds-active').checked
+      };
       App.loading(true, 'กำลังบันทึก...');
-      return App.api('apiAdminAssign', [token, currentJob.request.jobId, name]).then(function (res) {
+      return App.api('apiAdminSaveDesigner', [token, payload]).then(function (res) {
         App.loading(false);
-        App.toast('บันทึกผู้รับผิดชอบเรียบร้อย', 'ok');
-        applyJob(res.job);
+        applyDesigners(res);
+        App.toast('บันทึก ' + (res.designer ? res.designer.name : payload.name) + ' เรียบร้อย' +
+          (res.renamedJobs ? ' และเปลี่ยนชื่อในงานที่รับผิดชอบ ' + res.renamedJobs + ' งานให้แล้ว' : ''), 'ok');
+      }).catch(function (err) {
+        if (err.code === 'AUTH' || err.code === 'FORBIDDEN') { handleAuthError(err); return; }
+        App.loading(false);
+        App.toast(err.message, 'err');
+        setTimeout(function () { editDesigner(id, payload); }, 400);
+      });
+    }).catch(handleAuthError);
+  }
+
+  function deleteDesigner(id) {
+    var d = ((designerData && designerData.designers) || []).filter(function (x) { return x.id === id; })[0];
+    if (!d) return;
+    if (d.activeJobs > 0) {
+      App.toast(d.name + ' ยังมีงานที่กำลังทำอยู่ ' + d.activeJobs + ' งาน กรุณามอบหมายงานให้คนอื่นก่อน ' +
+        'หรือกด "แก้ไข" แล้วปิด "แสดงให้ผู้ขอเห็น" แทนการลบ', 'err');
+      return;
+    }
+    App.prompt({
+      title: 'ลบผู้ออกแบบ',
+      html: '<p class="mb-0">ลบ <strong>' + App.esc(d.name) + '</strong> ออกจากรายชื่อ? ' +
+        'งานที่ส่งมอบแล้วยังแสดงชื่อเดิมในประวัติ</p>',
+      okLabel: 'ลบ'
+    }).then(function (ok) {
+      if (!ok) return;
+      App.loading(true, 'กำลังลบ...');
+      return App.api('apiAdminDeleteDesigner', [token, id]).then(function (res) {
+        App.loading(false);
+        applyDesigners(res);
+        App.toast('ลบ ' + d.name + ' ออกจากรายชื่อแล้ว', 'ok');
       });
     }).catch(handleAuthError);
   }
@@ -1541,6 +1819,7 @@ var Admin = (function () {
   // ตั้งค่าแบ่งเป็นหมวด และใช้ช่องกรอกตามชนิดข้อมูล (สวิตช์ ตัวเลข ข้อความ)
   var SETTING_META = {
     publicFormOpen: { label: 'เปิดรับคำขอ', hint: 'ปิดชั่วคราวได้ เช่น ช่วงปิดภาคเรียนหรือคิวงานเต็ม', type: 'bool' },
+    publicWorkload: { label: 'แสดงคิวงานบนหน้ายื่นคำขอ', hint: 'ภาระงาน ปฏิทิน และตารางงานที่กำลังทำ (ไม่แสดงชื่อหรือข้อมูลติดต่อของผู้ขอ)', type: 'bool' },
     closedMessage: { label: 'ข้อความเมื่อปิดรับคำขอ', type: 'textarea' },
     minLeadDays: { label: 'ยื่นล่วงหน้าอย่างน้อย (วัน)', hint: 'น้อยกว่านี้ ผู้ขอต้องระบุเหตุผลความเร่งด่วน', type: 'number', min: 0, max: 90 },
     slaFirstDraftDays: { label: 'ส่งร่างแรกภายใน (วันทำการ)', hint: 'แสดงในเงื่อนไขการให้บริการ', type: 'number', min: 1, max: 90 },
@@ -1556,7 +1835,7 @@ var Admin = (function () {
     aiModel: { label: 'โมเดล AI ที่ใช้', type: 'text' }
   };
   var SETTING_GROUPS = [
-    { title: 'การรับคำขอ', icon: 'bi-inbox', keys: ['publicFormOpen', 'closedMessage', 'minLeadDays', 'slaFirstDraftDays', 'revisionLimit'] },
+    { title: 'การรับคำขอ', icon: 'bi-inbox', keys: ['publicFormOpen', 'publicWorkload', 'closedMessage', 'minLeadDays', 'slaFirstDraftDays', 'revisionLimit'] },
     { title: 'ไฟล์แนบ', icon: 'bi-paperclip', keys: ['maxFileMB', 'maxFiles', 'allowedFileTypes'] },
     { title: 'อีเมลแจ้งเตือน', icon: 'bi-envelope', keys: ['notifyEmails', 'notifyOwnerAlways', 'fromName', 'replyTo'] },
     { title: 'AI สรุป Design Brief', icon: 'bi-cpu', keys: ['aiEnabled', 'aiModel'] }
@@ -1594,7 +1873,8 @@ var Admin = (function () {
     App.loading(true, 'กำลังโหลดการตั้งค่า...');
     Promise.all([
       App.api('apiAdminSettings', [token]),
-      App.api('apiAdminUsers', [token])
+      App.api('apiAdminUsers', [token]),
+      loadDesigners(true)
     ]).then(function (results) {
       App.loading(false);
       renderSettings(results[0], results[1]);
@@ -1685,6 +1965,7 @@ var Admin = (function () {
         '<button class="btn btn-sm btn-brand" onclick="Admin.testEmail()">' +
           '<i class="bi bi-send"></i>ส่งอีเมลทดสอบ</button>' +
       '</div>' +
+      '<div class="card-soft p-3 p-md-4 mb-3" id="designers-card">' + designersCardHtml() + '</div>' +
       '<div class="card-soft p-3 p-md-4 mb-3">' +
         '<div class="fw-semibold mb-3"><i class="bi bi-sliders me-2" style="color:var(--primary)"></i>' +
           'ค่าตั้งค่าระบบ</div>' +
@@ -2043,7 +2324,9 @@ var Admin = (function () {
     uploadFinal: uploadFinal, deleteFile: deleteFile, saveSettings: saveSettings,
     saveApiKey: saveApiKey, clearApiKey: clearApiKey, testEmail: testEmail, copyText: copyText,
     deleteRequest: deleteRequest, resetData: resetData,
-    editUser: editUser, openChangePassword: openChangePassword, exportCsv: exportCsv
+    editUser: editUser, openChangePassword: openChangePassword, exportCsv: exportCsv,
+    assignPickChange: assignPickChange, editDesigner: editDesigner, deleteDesigner: deleteDesigner,
+    addSuggestedDesigner: addSuggestedDesigner
   };
 })();
 </script>
