@@ -40,7 +40,8 @@ function standardFileName_(req, originalName, kind, seq) {
  * payload: { fileName, mimeType, dataB64 }
  * kind: 'source' (ผู้ขอแนบ) | 'final' (ไฟล์ส่งมอบ) | 'draft'
  */
-function uploadAttachment_(jobId, payload, kind, uploader) {
+function uploadAttachment_(jobId, payload, kind, uploader, options) {
+  var skipLimit = !!(options && options.skipLimit); // ใช้กับไฟล์ที่แนบตอนตอบข้อมูลเพิ่มเติม ซึ่งนับแยกต่อรอบ
   var req = getRequest_(jobId);
   if (!req) throw appError_('ไม่พบเลขที่คำขอ ' + jobId);
 
@@ -57,7 +58,7 @@ function uploadAttachment_(jobId, payload, kind, uploader) {
 
   var maxFiles = getSettingInt_('maxFiles', 8);
   var existing = filterBy_(SHEET.ATTACHMENTS, 'jobId', req.jobId);
-  if (fileKind === 'source') {
+  if (fileKind === 'source' && !skipLimit) {
     var sourceCount = existing.filter(function (f) { return str_(f.kind) === 'source'; }).length;
     if (sourceCount >= maxFiles) {
       throw appError_('แนบไฟล์ได้สูงสุด ' + maxFiles + ' ไฟล์ต่อหนึ่งคำขอ');
@@ -206,11 +207,13 @@ function listAssetLibrary_(filter) {
   var year = str_(f.year);
   var media = str_(f.mediaType);
 
-  var delivered = readAll_(SHEET.REQUESTS).filter(function (r) {
+  // รวมงานที่ย้ายไปเก็บถาวรแล้ว คลังผลงานจึงค้นงานเก่าได้ครบทุกปี
+  var delivered = readAll_(SHEET.REQUESTS).concat(readArchive_(SHEET.REQUESTS)).filter(function (r) {
     return str_(r.status) === STATUS.DELIVERED.key;
   });
 
-  var allFiles = readAll_(SHEET.ATTACHMENTS).filter(function (a) { return str_(a.kind) === 'final'; });
+  var allFiles = readAll_(SHEET.ATTACHMENTS).concat(readArchive_(SHEET.ATTACHMENTS))
+    .filter(function (a) { return str_(a.kind) === 'final'; });
   var filesByJob = {};
   for (var i = 0; i < allFiles.length; i++) {
     var jid = str_(allFiles[i].jobId);
@@ -218,7 +221,7 @@ function listAssetLibrary_(filter) {
     filesByJob[jid].push({ fileName: allFiles[i].fileName, fileUrl: allFiles[i].fileUrl });
   }
 
-  var allItems = readAll_(SHEET.DELIVERABLES);
+  var allItems = readAll_(SHEET.DELIVERABLES).concat(readArchive_(SHEET.DELIVERABLES));
   var itemsByJob = {};
   for (var j = 0; j < allItems.length; j++) {
     var k = str_(allItems[j].jobId);

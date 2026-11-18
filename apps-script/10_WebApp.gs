@@ -26,7 +26,7 @@ function jsonForHtml_(obj) {
 function doGet(e) {
   var params = (e && e.parameter) ? e.parameter : {};
   var page = sanitizeParam_(params.page, /[^a-z]/g, 20);
-  var allowedPages = ['home', 'form', 'track', 'login', 'admin', 'setup'];
+  var allowedPages = ['home', 'form', 'track', 'login', 'admin', 'setup', 'resources'];
   if (allowedPages.indexOf(page) < 0) page = 'home';
 
   // ติดตั้งระบบให้อัตโนมัติเมื่อเปิดเว็บแอปครั้งแรก
@@ -110,6 +110,7 @@ function bootstrapData_() {
     statusLabels: Object.keys(STATUS).map(function (k) {
       return { key: k, label: STATUS[k].label, color: STATUS[k].color, icon: STATUS[k].icon };
     }),
+    resourceCategories: RESOURCE_CATEGORIES,
     settings: {
       revisionLimit: getSettingInt_('revisionLimit', 3),
       minLeadDays: getSettingInt_('minLeadDays', 7),
@@ -271,13 +272,22 @@ function apiAdminGet(token, jobId) {
  */
 function adminJobView_(jobId) {
   var full = getRequestFull_(jobId);
+  var archived = false;
+  if (!full) {
+    // งานที่ย้ายไปเก็บถาวรแล้ว เปิดดูได้แบบอ่านอย่างเดียว
+    full = archivedRequestFull_(jobId);
+    archived = !!full;
+  }
   if (!full) return null;
   var r = full.request;
   var info = statusInfo_(r.status);
   var p = priorityInfo_(livePriority_(r));
   var approval = draftApproval_(full.timeline);
   var inReview = info.key === STATUS.REVIEW.key;
+  var lastReply = full.replies.length ? str_(full.replies[full.replies.length - 1].createdAt) : '';
+  var sla = archived ? null : firstDraftSla_(r, lastReply);
   return {
+    archived: archived,
     request: {
       jobId: r.jobId,
       createdAt: str_(r.createdAt),
@@ -323,9 +333,17 @@ function adminJobView_(jobId) {
       deliveredAt: str_(r.deliveredAt),
       leadTimeDays: str_(r.leadTimeDays),
       cancelReason: str_(r.cancelReason),
+      firstDraftAt: str_(r.firstDraftAt),
+      draftDue: sla ? sla.dueDate : '',
+      draftDaysLeft: sla ? sla.daysLeft : null,
+      draftOverdue: !!(sla && sla.overdue),
+      infoRequest: info.key === STATUS.INFO_NEEDED.key ? infoQuestion_(full.timeline) : null,
       trackUrl: buildTrackUrl_(r)
     },
-    row: listRowView_(r),
+    row: archived ? null : listRowView_(r, lastReply),
+    edit: archived ? null : requestToPayload_(r, full.deliverables),
+    replies: full.replies.map(replyView_),
+    feedback: feedbackView_(full.feedback),
     deliverables: full.deliverables.map(function (d) {
       return {
         seq: int_(d.seq), mediaLabel: str_(d.mediaLabel), size: str_(d.size),
@@ -419,6 +437,95 @@ function apiAdminRegenerateBrief(token, jobId) {
   });
 }
 
+/** เจ้าหน้าที่แก้ไขข้อมูลคำขอ */
+function apiAdminEditRequest(token, jobId, payload, options) {
+  return respond_(function () {
+    var me = requireAuth_(token);
+    var result = editRequest_(jobId, payload, me.name || me.email, options);
+    result.job = adminJobView_(jobId);
+    return result;
+  });
+}
+
+/* ------------------------------------------ ผู้ขอตอบข้อมูลเพิ่มเติม / ประเมิน */
+
+function apiInfoUpload(jobId, email, token, filePayload) {
+  return respond_(function () {
+    return uploadInfoFile_(jobId, email, token, filePayload);
+  });
+}
+
+function apiInfoReply(jobId, email, token, answer) {
+  return respond_(function () {
+    return submitInfoReply_(jobId, email, token, answer);
+  });
+}
+
+function apiSubmitFeedback(jobId, email, token, rating, comment) {
+  return respond_(function () {
+    return submitFeedback_(jobId, email, token, rating, comment);
+  });
+}
+
+/* ------------------------------------------------------- คลังไฟล์ CI */
+
+/** รายการไฟล์ CI สำหรับทุกคน (ไม่ต้องเข้าสู่ระบบ) */
+function apiResources() {
+  return respond_(function () {
+    return { categories: RESOURCE_CATEGORIES, items: listResources_(false) };
+  });
+}
+
+function apiAdminResources(token) {
+  return respond_(function () {
+    requireAuth_(token);
+    var base = safeWebAppUrl_();
+    return {
+      categories: RESOURCE_CATEGORIES,
+      items: listResources_(true),
+      pageUrl: base ? base + '?page=resources' : ''
+    };
+  });
+}
+
+function apiAdminSaveResource(token, payload) {
+  return respond_(function () {
+    var me = requireAuth_(token);
+    // ไม่ล็อกทั้งระบบระหว่างอัปโหลดไฟล์ใหญ่ เพราะจะทำให้ผู้ใช้อื่นรอนาน (คลังไฟล์ไม่มีการออกเลข)
+    var item = saveResource_(payload, me.name || me.email);
+    return { item: item, items: listResources_(true) };
+  });
+}
+
+function apiAdminDeleteResource(token, id) {
+  return respond_(function () {
+    requireAuth_(token);
+    deleteResource_(id);
+    return { items: listResources_(true) };
+  });
+}
+
+/* ------------------------------------------------- ย้ายข้อมูลเก่าไปเก็บถาวร */
+
+var ARCHIVE_CONFIRM_TEXT = 'ย้ายข้อมูล';
+
+function apiAdminArchivePreview(token, cutoff) {
+  return respond_(function () {
+    requireAdmin_(token);
+    return previewArchive_(cutoff);
+  });
+}
+
+function apiAdminArchiveRun(token, cutoff, confirmText) {
+  return respond_(function () {
+    var me = requireAdmin_(token);
+    if (str_(confirmText) !== ARCHIVE_CONFIRM_TEXT) {
+      throw appError_('กรุณาพิมพ์คำว่า "' + ARCHIVE_CONFIRM_TEXT + '" ให้ตรงเพื่อยืนยัน');
+    }
+    return runArchive_(cutoff, me.name || me.email);
+  });
+}
+
 /**
  * ลบคำขอถาวร (เฉพาะผู้ดูแลระบบ)
  * ต้องพิมพ์เลขที่คำขอยืนยันให้ตรง เพื่อกันการกดพลาด
@@ -483,6 +590,7 @@ function apiAdminSettings(token) {
     var base = safeWebAppUrl_();
     return {
       settings: out,
+      archive: archiveInfo_(),
       hasApiKey: !!getProp_(PROP.ANTHROPIC_API_KEY),
       notifyTo: staffRecipients_(),
       ownerEmail: ownerEmail_(),

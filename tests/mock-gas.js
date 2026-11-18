@@ -99,6 +99,10 @@ class MockRange {
     return out;
   }
   setValues(values) {
+    // Sheets จริงไม่ยอมเขียนนอกขอบเขตของชีต
+    if (this.row - 1 + values.length > this.sheet.getMaxRows()) {
+      throw new Error('The coordinates of the range are outside the dimensions of the sheet.');
+    }
     for (let r = 0; r < values.length; r++) {
       const target = this.row - 1 + r;
       while (this.sheet._data.length <= target) this.sheet._data.push([]);
@@ -110,6 +114,14 @@ class MockRange {
   }
   setValue(v) { return this.setValues([[v]]); }
   getValue() { return this.getValues()[0][0]; }
+  clearContent() {
+    for (let r = 0; r < this.numRows; r++) {
+      const row = this.sheet._data[this.row - 1 + r];
+      if (!row) continue;
+      for (let c = 0; c < this.numCols; c++) row[this.col - 1 + c] = '';
+    }
+    return this;
+  }
   setFontWeight() { return this; }
   setBackground() { return this; }
   setFontColor() { return this; }
@@ -117,7 +129,8 @@ class MockRange {
 }
 
 class MockSheet {
-  constructor(name) { this.name = name; this._data = []; }
+  // ชีตใหม่ใน Google Sheets มี 1,000 แถว และเพิ่มขึ้นเองเมื่อ appendRow เกินจำนวนนั้น
+  constructor(name) { this.name = name; this._data = []; this._maxRows = 1000; }
   getName() { return this.name; }
   getRange(row, col, numRows, numCols) {
     return new MockRange(this, row, col, numRows === undefined ? 1 : numRows,
@@ -137,12 +150,29 @@ class MockSheet {
     for (const row of this._data) if (row && row.length > max) max = row.length;
     return max;
   }
+  insertRowsAfter(afterPosition, howMany) { this._maxRows = this.getMaxRows() + howMany; return this; }
   appendRow(values) {
+    // appendRow เพิ่มแถวให้เองเมื่อเต็ม
+    if (this.getLastRow() + 1 > this.getMaxRows()) this._maxRows = this.getLastRow() + 1;
     this._data[this.getLastRow()] = values.map(sheetsParse);
     return this;
   }
-  deleteRow(rowIndex) { this._data.splice(rowIndex - 1, 1); return this; }
-  deleteRows(rowIndex, howMany) { this._data.splice(rowIndex - 1, howMany); return this; }
+  // จำลองข้อจำกัดของ Sheets จริง: ห้ามลบแถวที่ไม่ได้ตรึงจนหมด และห้ามลบเกินจำนวนแถวที่มี
+  getMaxRows() { return Math.max(this._maxRows || 0, this._data.length); }
+  _checkDelete(rowIndex, howMany) {
+    const max = this.getMaxRows();
+    if (rowIndex + howMany - 1 > max) throw new Error('Those rows are out of bounds.');
+    if (rowIndex <= 2 && howMany >= max - 1) {
+      throw new Error('Sorry, it is not possible to delete all non-frozen rows.');
+    }
+  }
+  deleteRow(rowIndex) { return this.deleteRows(rowIndex, 1); }
+  deleteRows(rowIndex, howMany) {
+    this._checkDelete(rowIndex, howMany);
+    this._data.splice(rowIndex - 1, howMany);
+    if (this._maxRows) this._maxRows -= howMany;
+    return this;
+  }
   clear() { this._data = []; return this; }
   setFrozenRows() { return this; }
   setColumnWidth() { return this; }

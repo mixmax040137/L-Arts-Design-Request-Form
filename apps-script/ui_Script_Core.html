@@ -136,6 +136,10 @@ var App = (function () {
           '</div>';
       }
       document.getElementById('gm-body').innerHTML = body;
+      // ฟอร์มยาว (เช่น แก้ไขข้อมูลคำขอ) ใช้หน้าต่างกว้าง
+      var dialog = document.querySelector('#genericModal .modal-dialog');
+      dialog.classList.toggle('modal-lg', o.size === 'lg');
+      dialog.classList.toggle('modal-dialog-scrollable', o.size === 'lg');
 
       var okBtn = document.getElementById('gm-ok');
       var fresh = okBtn.cloneNode(true);
@@ -198,6 +202,7 @@ var App = (function () {
     }
 
     if (view === 'admin') Admin.onEnter();
+    if (view === 'resources') Library.load();
   }
 
   function showGuide() {
@@ -369,6 +374,91 @@ var Setup = (function () {
   }
 
   return { start: start, submit: submit };
+})();
+
+/* =========================================================================
+   Library — คลังไฟล์ CI ให้ทุกคนดาวน์โหลดเอง (ไม่ต้องเข้าสู่ระบบ)
+   ========================================================================= */
+var Library = (function () {
+  var items = null;
+  var loading = false;
+
+  function load() {
+    if (items) { render(); return; }
+    if (loading) return;
+    loading = true;
+    document.getElementById('resources-list').innerHTML =
+      '<div class="card-soft empty-state"><span class="spinner-border spinner-border-sm"></span>' +
+      '<p class="mt-3 mb-0">กำลังโหลด...</p></div>';
+    App.api('apiResources').then(function (data) {
+      loading = false;
+      items = data.items;
+      render();
+    }).catch(function (err) {
+      loading = false;
+      document.getElementById('resources-list').innerHTML =
+        '<div class="card-soft empty-state"><i class="bi bi-exclamation-circle"></i>' +
+        '<p class="mt-3 mb-0">' + App.esc(err.message) + '</p></div>';
+    });
+  }
+
+  function icon(r) {
+    if (r.kind === 'link') return 'bi-link-45deg';
+    var e = (r.ext || '').toLowerCase();
+    if (/^(png|jpg|jpeg|webp|gif|svg)$/.test(e)) return 'bi-file-earmark-image';
+    if (/^(ai|eps|psd|indd|idml)$/.test(e)) return 'bi-vector-pen';
+    if (/^(ttf|otf|woff|woff2)$/.test(e)) return 'bi-fonts';
+    if (/^(ppt|pptx|key)$/.test(e)) return 'bi-file-earmark-slides';
+    if (e === 'pdf') return 'bi-file-earmark-pdf';
+    if (e === 'zip') return 'bi-file-earmark-zip';
+    return 'bi-file-earmark';
+  }
+
+  function render() {
+    var box = document.getElementById('resources-list');
+    if (!items) return;
+    var q = (document.getElementById('r-search').value || '').trim().toLowerCase();
+    var list = items.filter(function (r) {
+      return !q || [r.title, r.description, r.category, r.fileName].join(' ').toLowerCase().indexOf(q) >= 0;
+    });
+    if (list.length === 0) {
+      box.innerHTML = '<div class="card-soft empty-state"><i class="bi bi-palette"></i><p class="mt-3 mb-0">' +
+        (items.length === 0 ? 'ยังไม่มีไฟล์ในคลัง' : 'ไม่พบไฟล์ที่ตรงกับคำค้น') + '</p></div>';
+      return;
+    }
+    var groups = [];
+    var byCat = {};
+    list.forEach(function (r) {
+      if (!byCat[r.category]) { byCat[r.category] = []; groups.push(r.category); }
+      byCat[r.category].push(r);
+    });
+    box.innerHTML = groups.map(function (cat) {
+      return '<div class="mb-4"><div class="set-group mb-2" style="border:0;padding:0">' + App.esc(cat) + '</div>' +
+        '<div class="row g-3">' + byCat[cat].map(function (r) {
+          return '<div class="col-md-6 col-lg-4"><div class="card-soft p-3 h-100 d-flex flex-column">' +
+            '<div class="d-flex gap-3 align-items-start mb-2">' +
+              '<div class="res-icon"><i class="bi ' + icon(r) + '"></i></div>' +
+              '<div class="flex-grow-1" style="min-width:0"><div class="fw-semibold" style="font-size:.93rem">' +
+                App.esc(r.title) + '</div>' +
+              '<div class="row-sub">' + (r.kind === 'link' ? 'ลิงก์ภายนอก'
+                : App.esc(r.ext) + (r.sizeLabel ? ' &middot; ' + App.esc(r.sizeLabel) : '')) + '</div></div></div>' +
+            (r.description ? '<div style="font-size:.83rem;color:var(--text-light)" class="mb-3">' +
+              App.nl2br(r.description) + '</div>' : '') +
+            '<div class="d-flex gap-2 mt-auto">' +
+              '<a class="btn btn-sm btn-brand flex-fill justify-content-center" target="_blank" rel="noopener" href="' +
+                App.esc(r.downloadUrl) + '"><i class="bi ' + (r.kind === 'link' ? 'bi-box-arrow-up-right' : 'bi-download') +
+                '"></i>' + (r.kind === 'link' ? 'เปิดลิงก์' : 'ดาวน์โหลด') + '</a>' +
+              (r.kind === 'file' ? '<a class="btn btn-sm btn-ghost" target="_blank" rel="noopener" href="' +
+                App.esc(r.url) + '">ดูตัวอย่าง</a>' : '') +
+            '</div></div></div>';
+        }).join('') + '</div></div>';
+    }).join('');
+  }
+
+  /** ล้างรายการที่จำไว้ (หลังเจ้าหน้าที่แก้ไขคลัง) */
+  function invalidate() { items = null; }
+
+  return { load: load, render: render, invalidate: invalidate };
 })();
 
 document.addEventListener('DOMContentLoaded', App.init);

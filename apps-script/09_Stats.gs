@@ -11,7 +11,8 @@ function getStats_(filter) {
   var from = startOfDay_(f.from);
   var to = f.to ? new Date(startOfDay_(f.to).getTime() + 86400000) : null;
 
-  var all = readAll_(SHEET.REQUESTS);
+  // รวมงานที่ย้ายไปเก็บถาวรแล้ว ตัวเลขย้อนหลังรายปีจึงไม่หายไปหลังย้ายข้อมูล
+  var all = readAll_(SHEET.REQUESTS).concat(readArchive_(SHEET.REQUESTS));
   var rows = all.filter(function (r) {
     var created = parseDate_(r.createdAt);
     if (!created) return false;
@@ -77,7 +78,7 @@ function getStats_(filter) {
 
   // นับตามประเภทสื่อ (นับตามจำนวนรายการชิ้นงาน)
   var mediaCount = {};
-  var deliverables = readAll_(SHEET.DELIVERABLES);
+  var deliverables = readAll_(SHEET.DELIVERABLES).concat(readArchive_(SHEET.DELIVERABLES));
   for (var d = 0; d < deliverables.length; d++) {
     if (!jobIds[str_(deliverables[d].jobId)]) continue;
     var label = str_(deliverables[d].mediaLabel) || 'ไม่ระบุ';
@@ -140,6 +141,7 @@ function getStats_(filter) {
     avgFirstDraftDays: average(firstDraftDays),
     avgRevisions: average(revisionCounts),
     onTimeRate: onTimeBase > 0 ? Math.round((onTime / onTimeBase) * 100) : null,
+    satisfaction: satisfactionStats_(rows, totals.delivered),
     briefCoverage: (function () {
       var withBrief = rows.filter(function (r) { return str_(r.briefStatus) === 'DONE'; }).length;
       return rows.length > 0 ? Math.round((withBrief / rows.length) * 100) : null;
@@ -147,7 +149,7 @@ function getStats_(filter) {
     completeOnFirstSubmit: (function () {
       // ร้อยละของคำขอที่ข้อมูลครบตั้งแต่ครั้งแรก (ไม่ถูกตีกลับขอข้อมูลเพิ่ม)
       if (rows.length === 0) return null;
-      var timeline = readAll_(SHEET.TIMELINE);
+      var timeline = readAll_(SHEET.TIMELINE).concat(readArchive_(SHEET.TIMELINE));
       var bounced = {};
       for (var i = 0; i < timeline.length; i++) {
         if (str_(timeline[i].toStatus) === STATUS.INFO_NEEDED.key) {
@@ -163,6 +165,42 @@ function getStats_(filter) {
   };
 }
 
+/**
+ * สรุปผลประเมินความพึงพอใจของงานในช่วงเวลาที่เลือก
+ * responseRate = ร้อยละของงานที่ส่งมอบแล้วที่ผู้ขอตอบแบบประเมิน
+ */
+function satisfactionStats_(rows, deliveredCount) {
+  var byJob = {};
+  for (var i = 0; i < rows.length; i++) byJob[str_(rows[i].jobId)] = rows[i];
+  var all = readAll_(SHEET.FEEDBACK).concat(readArchive_(SHEET.FEEDBACK)).filter(function (f) {
+    return !!byJob[str_(f.jobId)];
+  });
+  var dist = [0, 0, 0, 0, 0];
+  var sum = 0;
+  for (var j = 0; j < all.length; j++) {
+    var score = int_(all[j].rating);
+    if (score < 1 || score > 5) continue;
+    dist[score - 1]++;
+    sum += score;
+  }
+  var count = dist[0] + dist[1] + dist[2] + dist[3] + dist[4];
+  var recent = sortByTime_(all.filter(function (f) { return !!str_(f.comment); }), 'updatedAt')
+    .reverse().slice(0, 6).map(function (f) {
+      var r = byJob[str_(f.jobId)];
+      return {
+        jobId: str_(f.jobId), projectName: str_(r.projectName), rating: int_(f.rating),
+        comment: str_(f.comment), at: str_(f.updatedAt) || str_(f.createdAt)
+      };
+    });
+  return {
+    count: count,
+    avg: count > 0 ? Math.round((sum / count) * 10) / 10 : null,
+    responseRate: deliveredCount > 0 ? Math.round((count / deliveredCount) * 100) : null,
+    dist: dist,
+    recent: recent
+  };
+}
+
 /** ข้อมูลสำหรับส่งออกเป็น CSV (รายงานประจำปี) */
 function exportRows_(filter) {
   var rows = listRequests_(filter || {});
@@ -175,11 +213,16 @@ function exportRows_(filter) {
   }
   var header = ['เลขที่คำขอ', 'วันที่ยื่น', 'สถานะ', 'ความเร่งด่วน', 'ผู้ขอรับบริการ', 'อีเมล',
     'โทรศัพท์', 'หน่วยงาน', 'ชื่อโครงการ', 'ชิ้นงาน', 'กำหนดใช้งาน', 'วันที่ส่งมอบ',
-    'ระยะเวลาดำเนินการ (วัน)', 'ผู้รับผิดชอบ', 'รอบแก้ไข'];
+    'ระยะเวลาดำเนินการ (วัน)', 'ผู้รับผิดชอบ', 'รอบแก้ไข', 'คะแนนความพึงพอใจ', 'ความเห็นผู้ขอ'];
+  var feedback = {};
+  var fb = readAll_(SHEET.FEEDBACK);
+  for (var f = 0; f < fb.length; f++) feedback[str_(fb[f].jobId)] = fb[f];
   var body = rows.map(function (r) {
+    var rating = feedback[str_(r.jobId)];
     return [r.jobId, r.createdAt, r.statusLabel, r.priorityLabel, r.requesterName, r.requesterEmail,
       r.requesterPhone, r.department, r.projectName, media[str_(r.jobId)] || '', r.dueDate,
-      r.deliveredAt, r.leadTimeDays, r.assignedTo, r.revisionCount + '/' + r.revisionLimit];
+      r.deliveredAt, r.leadTimeDays, r.assignedTo, r.revisionCount + '/' + r.revisionLimit,
+      rating ? int_(rating.rating) : '', rating ? str_(rating.comment) : ''];
   });
   return { header: header, rows: body };
 }

@@ -5,7 +5,7 @@
  * ไฟล์นี้สร้างอัตโนมัติจาก apps-script/*.gs ด้วยคำสั่ง  npm run bundle
  * ห้ามแก้ไขไฟล์นี้โดยตรง ให้แก้ที่ apps-script/ แล้วสร้างใหม่
  *
- * รวมจาก 11 ไฟล์: 00_Config.gs, 01_Utils.gs, 02_Store.gs, 03_Setup.gs, 04_Requests.gs, 05_Files.gs, 06_Mailer.gs, 07_AI.gs, 08_Auth.gs, 09_Stats.gs, 10_WebApp.gs
+ * รวมจาก 14 ไฟล์: 00_Config.gs, 01_Utils.gs, 02_Store.gs, 03_Setup.gs, 04_Requests.gs, 05_Files.gs, 06_Mailer.gs, 07_AI.gs, 08_Auth.gs, 09_Stats.gs, 10_WebApp.gs, 11_Requester.gs, 12_Library.gs, 13_Archive.gs
  */
 
 
@@ -42,7 +42,9 @@ var PROP = {
   SETUP_AT: 'SETUP_AT',
   SETUP_KEY: 'SETUP_KEY',
   OWNER_EMAIL: 'OWNER_EMAIL',
-  WEBAPP_URL: 'WEBAPP_URL'
+  WEBAPP_URL: 'WEBAPP_URL',
+  RESOURCE_FOLDER_ID: 'RESOURCE_FOLDER_ID',
+  ARCHIVE_SPREADSHEET_ID: 'ARCHIVE_SPREADSHEET_ID'
 };
 
 /** ชื่อชีตทั้งหมด */
@@ -54,8 +56,25 @@ var SHEET = {
   TIMELINE: 'Timeline',
   USERS: 'Users',
   SETTINGS: 'Settings',
-  COUNTERS: 'Counters'
+  COUNTERS: 'Counters',
+  REPLIES: 'Replies',       // ผู้ขอตอบ "รอข้อมูลเพิ่มเติม" ผ่านระบบ
+  FEEDBACK: 'Feedback',     // แบบประเมินความพึงพอใจหลังส่งมอบ
+  RESOURCES: 'Resources'    // คลังไฟล์ CI ให้ดาวน์โหลดเอง
 };
+
+/** ชีตที่เก็บข้อมูลของคำขอแต่ละใบ (ใช้ตอนลบคำขอ ล้างข้อมูล และย้ายข้อมูลเก่าไปเก็บถาวร) */
+var JOB_SHEETS = ['Deliverables', 'Attachments', 'Revisions', 'Timeline', 'Replies', 'Feedback'];
+
+/** หมวดของไฟล์ในคลังไฟล์ CI */
+var RESOURCE_CATEGORIES = [
+  'ตราสัญลักษณ์และโลโก้',
+  'เทมเพลตสื่อประชาสัมพันธ์',
+  'เทมเพลตสไลด์และเอกสาร',
+  'ฟอนต์และชุดสี',
+  'คู่มืออัตลักษณ์องค์กร (CI)',
+  'ภาพถ่ายคณะ',
+  'อื่น ๆ'
+];
 
 /**
  * สถานะงาน 5 ระดับหลัก + สถานะยกเว้น 2 สถานะ
@@ -197,7 +216,11 @@ var COLUMNS = {
   Timeline:   ['id', 'jobId', 'at', 'actor', 'action', 'fromStatus', 'toStatus', 'detail'],
   Users:      ['email', 'name', 'role', 'passwordHash', 'salt', 'active', 'createdAt', 'lastLoginAt'],
   Settings:   ['key', 'value', 'updatedAt'],
-  Counters:   ['name', 'value']
+  Counters:   ['name', 'value'],
+  Replies:    ['id', 'jobId', 'createdAt', 'byName', 'byEmail', 'question', 'answer', 'fileCount', 'returnedTo'],
+  Feedback:   ['id', 'jobId', 'createdAt', 'updatedAt', 'rating', 'comment', 'byEmail'],
+  Resources:  ['id', 'title', 'description', 'category', 'kind', 'url', 'fileId', 'fileName', 'mimeType',
+    'sizeBytes', 'active', 'sortOrder', 'createdAt', 'createdBy', 'updatedAt']
 };
 
 /** สีหลักของระบบ (ใช้ทั้งใน UI และอีเมล) */
@@ -625,8 +648,15 @@ function sheet_(name) {
   var book = ss_();
   var sh = book.getSheetByName(name);
   if (!sh) {
-    sh = book.insertSheet(name);
-    writeHeader_(sh, name);
+    // ชีตใหม่ (เช่น ชีตที่เพิ่มในเวอร์ชันหลัง) สร้างให้เองเมื่อใช้ครั้งแรก
+    // ถ้ามีคนเปิดพร้อมกันแล้วอีกคนสร้างไปก่อน ให้ใช้ชีตที่สร้างแล้วแทน
+    try {
+      sh = book.insertSheet(name);
+      writeHeader_(sh, name);
+    } catch (err) {
+      sh = book.getSheetByName(name);
+      if (!sh) throw err;
+    }
   }
   _cache.sheets[name] = sh;
   return sh;
@@ -645,7 +675,12 @@ function writeHeader_(sh, name) {
 
 /** อ่านทุกแถวของชีตเป็น array ของ object */
 function readAll_(name) {
-  var sh = sheet_(name);
+  return readRows_(sheet_(name), name);
+}
+
+/** อ่านทุกแถวจากชีตที่ระบุ (ใช้ได้กับสเปรดชีตเก็บถาวรด้วย) โดยใช้โครงสร้างคอลัมน์ของชีตชื่อ name */
+function readRows_(sh, name) {
+  if (!sh) return [];
   var lastRow = sh.getLastRow();
   var cols = COLUMNS[name];
   if (lastRow < 2) return [];
@@ -748,8 +783,7 @@ function update_(name, rowIndex, patch) {
 
 /** ลบแถว */
 function remove_(name, rowIndex) {
-  var sh = sheet_(name);
-  sh.deleteRow(rowIndex);
+  deleteDataRows_(sheet_(name), rowIndex, 1, COLUMNS[name].length);
 }
 
 /**
@@ -770,7 +804,7 @@ function removeWhere_(name, key, value) {
   for (var i = 0; i < values.length; i++) {
     if (str_(values[i][0]) === target) rows.push(i + 2);
   }
-  for (var r = rows.length - 1; r >= 0; r--) sh.deleteRow(rows[r]);
+  for (var r = rows.length - 1; r >= 0; r--) deleteDataRows_(sh, rows[r], 1, cols.length);
   return rows.length;
 }
 
@@ -779,8 +813,20 @@ function clearSheetRows_(name) {
   var sh = sheet_(name);
   var lastRow = sh.getLastRow();
   if (lastRow < 2) return 0;
-  sh.deleteRows(2, lastRow - 1);
+  deleteDataRows_(sh, 2, lastRow - 1, COLUMNS[name].length);
   return lastRow - 1;
+}
+
+/**
+ * ลบแถวข้อมูลช่วงหนึ่ง
+ * Google Sheets ไม่ยอมให้ลบแถวที่ไม่ได้ตรึงไว้จนหมดทุกแถว (เกิดได้เมื่อชีตยาวเกิน 1,000 แถว
+ * เพราะ appendRow เพิ่มแถวพอดีกับข้อมูล) จึงล้างค่าก่อนแล้วเว้นแถวสุดท้ายไว้หนึ่งแถว
+ */
+function deleteDataRows_(sh, start, count, width) {
+  if (count <= 0) return;
+  sh.getRange(start, 1, count, width).clearContent();
+  var deletable = Math.min(count, sh.getMaxRows() - start);
+  if (deletable > 0) sh.deleteRows(start, deletable);
 }
 
 /**
@@ -949,7 +995,8 @@ function setupSystem() {
 
   // 3) สร้างชีตทั้งหมดพร้อมหัวตาราง
   var names = [SHEET.REQUESTS, SHEET.DELIVERABLES, SHEET.ATTACHMENTS, SHEET.REVISIONS,
-    SHEET.TIMELINE, SHEET.USERS, SHEET.SETTINGS, SHEET.COUNTERS];
+    SHEET.TIMELINE, SHEET.USERS, SHEET.SETTINGS, SHEET.COUNTERS,
+    SHEET.REPLIES, SHEET.FEEDBACK, SHEET.RESOURCES];
   for (var i = 0; i < names.length; i++) {
     ensureSheet_(book, names[i]);
   }
@@ -1394,8 +1441,11 @@ function checkSystem() {
  * ตรวจสอบและทำความสะอาดข้อมูลจากแบบฟอร์ม
  * คืน object ที่พร้อมบันทึก หรือโยน error พร้อมข้อความภาษาไทย
  */
-function validateRequestPayload_(payload) {
+function validateRequestPayload_(payload, options) {
   var p = payload || {};
+  // staffEdit: เจ้าหน้าที่แก้ไขคำขอเดิม ยอมให้กำหนดใช้งานเป็นวันที่ผ่านมาแล้ว
+  // ไม่บังคับเหตุผลงานด่วนและการยอมรับเงื่อนไข และพิมพ์ชื่อหน่วยงานเองได้
+  var staffEdit = !!(options && options.staffEdit);
   var errors = [];
   var out = {};
 
@@ -1409,7 +1459,7 @@ function validateRequestPayload_(payload) {
   if (!isValidPhone_(out.requesterPhone)) errors.push('กรุณากรอกเบอร์โทรศัพท์ 9-10 หลัก');
 
   var dept = truncate_(pick_(p, 'department', ''), 150);
-  if (dept === 'อื่น ๆ') {
+  if (dept === 'อื่น ๆ' && !(staffEdit && !pick_(p, 'departmentOther', ''))) {
     var other = truncate_(pick_(p, 'departmentOther', ''), 150);
     if (!other) errors.push('กรุณาระบุชื่อหน่วยงานหรือสาขาวิชา');
     dept = other || dept;
@@ -1431,7 +1481,7 @@ function validateRequestPayload_(payload) {
     out.dueDate = '';
   } else {
     var daysAhead = daysBetween_(new Date(), due);
-    if (daysAhead < 0) {
+    if (daysAhead < 0 && !staffEdit) {
       errors.push('วันที่ต้องการใช้งานต้องไม่เป็นวันที่ผ่านมาแล้ว');
     }
     out.dueDate = Utilities.formatDate(due, APP.TIMEZONE, 'yyyy-MM-dd');
@@ -1500,14 +1550,14 @@ function validateRequestPayload_(payload) {
   // งานด่วนต้องมีเหตุผล
   var minLead = getSettingInt_('minLeadDays', 7);
   out.rushReason = truncate_(pick_(p, 'rushReason', ''), 500);
-  if (due) {
+  if (due && !staffEdit) {
     var lead = daysBetween_(new Date(), due);
     if (lead >= 0 && lead < minLead && !out.rushReason) {
       errors.push('กำหนดใช้งานเหลือน้อยกว่า ' + minLead + ' วัน กรุณาระบุเหตุผลความจำเป็นเร่งด่วน');
     }
   }
 
-  if (pick_(p, 'acceptTerms', false) !== true && str_(pick_(p, 'acceptTerms', '')) !== 'true') {
+  if (!staffEdit && pick_(p, 'acceptTerms', false) !== true && str_(pick_(p, 'acceptTerms', '')) !== 'true') {
     errors.push('กรุณายอมรับเงื่อนไขการให้บริการก่อนส่งคำขอ');
   }
 
@@ -1668,8 +1718,215 @@ function getRequestFull_(jobId) {
     attachments: filterBy_(SHEET.ATTACHMENTS, 'jobId', req.jobId),
     revisions: filterBy_(SHEET.REVISIONS, 'jobId', req.jobId)
       .sort(function (a, b) { return int_(a.round) - int_(b.round); }),
-    timeline: getTimeline_(req.jobId)
+    timeline: getTimeline_(req.jobId),
+    replies: sortByTime_(filterBy_(SHEET.REPLIES, 'jobId', req.jobId), 'createdAt'),
+    feedback: findBy_(SHEET.FEEDBACK, 'jobId', req.jobId)
   };
+}
+
+/** เรียงจากเก่าไปใหม่ตามคอลัมน์เวลา คงลำดับเดิมเมื่อเวลาเท่ากัน */
+function sortByTime_(rows, key) {
+  return rows.slice().sort(function (a, b) {
+    var x = str_(a[key]);
+    var y = str_(b[key]);
+    return x === y ? 0 : (x < y ? -1 : 1);
+  });
+}
+
+/* ------------------------------------------- กำหนดส่งร่างแรก (SLA) */
+
+/** บวกวันทำการ (ข้ามเสาร์ อาทิตย์ ไม่นับวันหยุดนักขัตฤกษ์) */
+function addBusinessDays_(date, days) {
+  var d = startOfDay_(date);
+  if (!d) return null;
+  var added = 0;
+  var guard = 0;
+  while (added < days && guard < 400) {
+    d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+    var w = d.getDay();
+    if (w !== 0 && w !== 6) added++;
+    guard++;
+  }
+  return d;
+}
+
+/**
+ * กำหนดส่งร่างแรกตามเงื่อนไขการให้บริการ (slaFirstDraftDays วันทำการ)
+ * เริ่มนับจากวันยื่นคำขอ หรือวันที่ผู้ขอส่งข้อมูลเพิ่มเติมครั้งล่าสุด (ข้อมูลครบเมื่อไรเริ่มนับเมื่อนั้น)
+ * ระหว่างรอข้อมูลเพิ่มเติมไม่นับ และเมื่อส่งร่างแรกแล้วจะไม่แสดงอีก
+ */
+function firstDraftSla_(r, lastReplyAt) {
+  var st = str_(r.status).toUpperCase();
+  if (str_(r.firstDraftAt)) return null;
+  if (st !== STATUS.NEW.key && st !== STATUS.DESIGNING.key) return null;
+  if (!str_(r.submittedAt)) return null;
+  var start = parseDate_(r.submittedAt);
+  var replied = parseDate_(lastReplyAt);
+  if (replied && (!start || replied > start)) start = replied;
+  var due = addBusinessDays_(start, getSettingInt_('slaFirstDraftDays', 5));
+  if (!due) return null;
+  var left = daysBetween_(new Date(), due);
+  return {
+    dueDate: Utilities.formatDate(due, APP.TIMEZONE, 'yyyy-MM-dd'),
+    daysLeft: left,
+    overdue: left < 0
+  };
+}
+
+/** เวลาที่ผู้ขอตอบข้อมูลเพิ่มเติมครั้งล่าสุดของทุกงาน (อ่านชีตครั้งเดียว) */
+function lastReplyMap_() {
+  var map = {};
+  var rows = readAll_(SHEET.REPLIES);
+  for (var i = 0; i < rows.length; i++) {
+    var id = str_(rows[i].jobId);
+    var at = str_(rows[i].createdAt);
+    if (!map[id] || at > map[id]) map[id] = at;
+  }
+  return map;
+}
+
+/* ------------------------------------------- เจ้าหน้าที่แก้ไขข้อมูลคำขอ */
+
+/** ช่องที่เจ้าหน้าที่แก้ได้ พร้อมชื่อที่แสดงในประวัติ (short = แสดงค่าเดิมและค่าใหม่) */
+var EDITABLE_FIELDS = [
+  { key: 'projectName', label: 'ชื่อโครงการ', short: true },
+  { key: 'dueDate', label: 'กำหนดใช้งาน', short: true, date: true },
+  { key: 'eventDate', label: 'วันจัดกิจกรรม', short: true, date: true },
+  { key: 'requesterName', label: 'ชื่อผู้ประสานงาน', short: true },
+  { key: 'requesterEmail', label: 'อีเมลผู้ประสานงาน', short: true },
+  { key: 'requesterPhone', label: 'โทรศัพท์', short: true },
+  { key: 'lineId', label: 'LINE ID', short: true },
+  { key: 'department', label: 'หน่วยงาน', short: true },
+  { key: 'objective', label: 'วัตถุประสงค์', brief: true },
+  { key: 'targetAudience', label: 'กลุ่มเป้าหมาย', brief: true },
+  { key: 'keyMessage', label: 'ข้อความหลัก', brief: true },
+  { key: 'mandatoryText', label: 'ข้อความบังคับบนชิ้นงาน', brief: true },
+  { key: 'referenceUrl', label: 'ตัวอย่างอ้างอิง', brief: true },
+  { key: 'channels', label: 'ช่องทางเผยแพร่', brief: true },
+  { key: 'notes', label: 'หมายเหตุ', brief: true },
+  { key: 'rushReason', label: 'เหตุผลความเร่งด่วน' }
+];
+
+/** แปลงแถวคำขอกลับเป็นรูปแบบเดียวกับข้อมูลจากแบบฟอร์ม */
+function requestToPayload_(req, deliverables) {
+  return {
+    requesterName: str_(req.requesterName),
+    requesterEmail: str_(req.requesterEmail),
+    requesterPhone: phoneOut_(req.requesterPhone),
+    lineId: str_(req.lineId),
+    department: str_(req.department),
+    projectName: str_(req.projectName),
+    eventDate: str_(req.eventDate).substring(0, 10),
+    dueDate: str_(req.dueDate).substring(0, 10),
+    objective: str_(req.objective),
+    targetAudience: str_(req.targetAudience),
+    keyMessage: str_(req.keyMessage),
+    mandatoryText: str_(req.mandatoryText),
+    referenceUrl: str_(req.referenceUrl),
+    channels: splitList_(req.channels),
+    notes: str_(req.notes),
+    rushReason: str_(req.rushReason),
+    deliverables: deliverables.map(function (d) {
+      return {
+        mediaType: str_(d.mediaType),
+        mediaOther: str_(d.mediaType) === 'other' ? str_(d.mediaLabel) : '',
+        size: str_(d.size),
+        quantity: int_(d.quantity, 1),
+        note: str_(d.note)
+      };
+    })
+  };
+}
+
+function deliverablesKey_(items) {
+  return JSON.stringify(items.map(function (d) {
+    return [str_(d.mediaType), str_(d.mediaLabel), str_(d.size), int_(d.quantity, 1), str_(d.note)];
+  }));
+}
+
+/**
+ * เจ้าหน้าที่แก้ไขข้อมูลคำขอ (เช่น เลื่อนกำหนดใช้งาน แก้ชื่อโครงการ เปลี่ยนรายการชิ้นงาน)
+ * ตรวจข้อมูลด้วยกติกาเดียวกับแบบฟอร์ม บันทึกเฉพาะช่องที่เปลี่ยน และบันทึกในประวัติว่าใครแก้อะไร
+ * options.notify = ส่งอีเมลแจ้งผู้ขอว่ามีการปรับข้อมูล
+ */
+function editRequest_(jobId, payload, actor, options) {
+  var id = str_(jobId).toUpperCase();
+  var p = payload || {};
+  var result = withLock_(function () {
+    var req = getRequest_(id);
+    if (!req) throw appError_('ไม่พบเลขที่คำขอ ' + id);
+    var oldItems = filterBy_(SHEET.DELIVERABLES, 'jobId', id)
+      .sort(function (a, b) { return int_(a.seq) - int_(b.seq); });
+    var current = requestToPayload_(req, oldItems);
+
+    var merged = {};
+    for (var k in current) if (Object.prototype.hasOwnProperty.call(current, k)) merged[k] = current[k];
+    for (var key in p) {
+      if (!Object.prototype.hasOwnProperty.call(p, key)) continue;
+      if (Object.prototype.hasOwnProperty.call(current, key) || key === 'departmentOther') merged[key] = p[key];
+    }
+    var data = validateRequestPayload_(merged, { staffEdit: true });
+
+    var patch = {};
+    var changes = [];
+    var briefChanged = false;
+    for (var i = 0; i < EDITABLE_FIELDS.length; i++) {
+      var f = EDITABLE_FIELDS[i];
+      var before = f.key === 'channels' ? joinList_(current.channels) : str_(current[f.key]);
+      var after = str_(data[f.key]);
+      if (before === after) continue;
+      patch[f.key] = after;
+      if (f.brief || f.date || f.key === 'projectName') briefChanged = true;
+      var show = function (v) { return f.date ? (v ? formatThaiDate_(v) : '(ไม่ระบุ)') : (v || '(ว่าง)'); };
+      changes.push({
+        field: f.key, label: f.label,
+        text: f.short ? f.label + ' จาก ' + truncate_(show(before), 80) + ' เป็น ' + truncate_(show(after), 80)
+          : f.label
+      });
+    }
+
+    var itemsChanged = deliverablesKey_(oldItems) !== deliverablesKey_(data.deliverables);
+    if (itemsChanged) {
+      briefChanged = true;
+      changes.push({ field: 'deliverables', label: 'รายการชิ้นงาน', text: 'รายการชิ้นงาน' });
+    }
+    if (changes.length === 0) return { jobId: id, changes: [] };
+
+    if (patch.dueDate) patch.priority = calcPriority_(patch.dueDate);
+    // ข้อมูลที่ใช้สรุปโจทย์เปลี่ยน ให้งานเบื้องหลังสรุป Design Brief ใหม่ให้ตรงกับข้อมูลล่าสุด
+    if (briefChanged && str_(req.submittedAt)) patch.briefStatus = 'PENDING';
+    patch.updatedAt = nowIso_();
+    patch.updatedBy = str_(actor);
+    update_(SHEET.REQUESTS, req._row, patch);
+
+    if (itemsChanged) {
+      removeWhere_(SHEET.DELIVERABLES, 'jobId', id);
+      for (var j = 0; j < data.deliverables.length; j++) {
+        var d = data.deliverables[j];
+        insert_(SHEET.DELIVERABLES, {
+          id: newId_('D'), jobId: id, seq: j + 1, mediaType: d.mediaType, mediaLabel: d.mediaLabel,
+          size: d.size, quantity: d.quantity, note: d.note
+        });
+      }
+    }
+
+    logTimeline_(id, actor, 'EDIT', '', '', 'แก้ไขข้อมูลคำขอ: ' +
+      changes.map(function (c) { return c.text; }).join(' / '));
+    return { jobId: id, changes: changes, briefQueued: patch.briefStatus === 'PENDING' };
+  });
+
+  if (result.briefQueued) {
+    try { scheduleWorker_(); } catch (err) { /* ทริกเกอร์ทุก 5 นาทีจะทำให้เอง */ }
+  }
+  if (options && options.notify && result.changes.length > 0) {
+    try {
+      sendRequestEditedEmail_(getRequest_(id), result.changes);
+      result.notified = true;
+    } catch (err) {
+      logTimeline_(id, 'system', 'EMAIL_ERROR', '', '', 'แจ้งผู้ขอเรื่องแก้ไขข้อมูลไม่สำเร็จ: ' + err.message);
+    }
+  }
+  return result;
 }
 
 /**
@@ -1728,31 +1985,36 @@ function buildTrackUrl_(req) {
  */
 function getPublicView_(jobId, email, token) {
   var id = str_(jobId).toUpperCase();
-  var req = getRequest_(id);
-  if (!req) return null;
+  var full = getRequestFull_(id);
+  var archived = false;
+  if (!full) {
+    full = archivedRequestFull_(id);
+    archived = !!full;
+  }
+  if (!full) return null;
+  var req = full.request;
 
   var authorized = false;
   if (token && verifyTrackToken_(id, token)) authorized = true;
   if (!authorized && email && str_(email).toLowerCase() === str_(req.requesterEmail).toLowerCase()) authorized = true;
   if (!authorized) return null;
 
-  var deliverables = filterBy_(SHEET.DELIVERABLES, 'jobId', id)
-    .sort(function (a, b) { return int_(a.seq) - int_(b.seq); })
-    .map(function (d) {
-      return { mediaLabel: d.mediaLabel, size: d.size, quantity: int_(d.quantity), note: str_(d.note) };
-    });
+  var live = !archived;
+  var deliverables = full.deliverables.map(function (d) {
+    return { mediaLabel: str_(d.mediaLabel), size: str_(d.size), quantity: int_(d.quantity), note: str_(d.note) };
+  });
+  var revisions = full.revisions.map(function (r) {
+    return { round: int_(r.round), createdAt: str_(r.createdAt), byName: str_(r.byName), comment: str_(r.comment) };
+  });
 
-  var revisions = filterBy_(SHEET.REVISIONS, 'jobId', id)
-    .sort(function (a, b) { return int_(a.round) - int_(b.round); })
-    .map(function (r) {
-      return { round: int_(r.round), createdAt: str_(r.createdAt), byName: str_(r.byName), comment: str_(r.comment) };
-    });
-
-  var fullTimeline = getTimeline_(id);
-  var approval = draftApproval_(fullTimeline);
-  var inReview = str_(req.status) === STATUS.REVIEW.key;
-  var timeline = fullTimeline
-    .filter(function (t) { return str_(t.action) !== 'EMAIL_ERROR' && str_(t.action) !== 'NOTE'; })
+  var approval = draftApproval_(full.timeline);
+  var st = str_(req.status);
+  var inReview = live && st === STATUS.REVIEW.key;
+  var timeline = full.timeline
+    .filter(function (t) {
+      var a = str_(t.action);
+      return a !== 'EMAIL_ERROR' && a !== 'NOTE' && a !== 'EDIT' && a !== 'ERROR';
+    })
     .map(function (t) {
       return {
         at: str_(t.at), action: str_(t.action), toStatus: str_(t.toStatus),
@@ -1761,13 +2023,15 @@ function getPublicView_(jobId, email, token) {
       };
     });
 
-  var files = filterBy_(SHEET.ATTACHMENTS, 'jobId', id)
+  var files = full.attachments
     .filter(function (f) { return str_(f.kind) === 'final'; })
     .map(function (f) { return { fileName: f.fileName, fileUrl: f.fileUrl, sizeBytes: int_(f.sizeBytes) }; });
 
   var info = statusInfo_(req.status);
+  var infoNeeded = live && st === STATUS.INFO_NEEDED.key;
   return {
     jobId: req.jobId,
+    archived: archived,
     status: info.key,
     statusLabel: info.label,
     statusEn: info.en,
@@ -1789,6 +2053,11 @@ function getPublicView_(jobId, email, token) {
     canRequestRevision: inReview && !approval.approved &&
       int_(req.revisionCount) < int_(req.revisionLimit),
     canApprove: inReview && !approval.approved,
+    infoRequest: infoNeeded ? infoQuestion_(full.timeline) : null,
+    canReply: infoNeeded,
+    replyMaxFiles: getSettingInt_('maxFiles', 8),
+    feedback: feedbackView_(full.feedback),
+    canRate: live && st === STATUS.DELIVERED.key,
     deliverables: deliverables,
     revisions: revisions,
     finalFiles: files,
@@ -2092,6 +2361,8 @@ function deleteRequest_(jobId, actor) {
     summary.attachments = removeWhere_(SHEET.ATTACHMENTS, 'jobId', id);
     summary.revisions = removeWhere_(SHEET.REVISIONS, 'jobId', id);
     summary.timeline = removeWhere_(SHEET.TIMELINE, 'jobId', id);
+    summary.replies = removeWhere_(SHEET.REPLIES, 'jobId', id);
+    summary.feedback = removeWhere_(SHEET.FEEDBACK, 'jobId', id);
     remove_(SHEET.REQUESTS, req._row);
 
     // เก็บร่องรอยไว้ตรวจสอบย้อนหลังว่าใครลบอะไรเมื่อไหร่
@@ -2124,6 +2395,8 @@ function resetAllRequests_(actor) {
       attachments: clearSheetRows_(SHEET.ATTACHMENTS),
       revisions: clearSheetRows_(SHEET.REVISIONS),
       timeline: clearSheetRows_(SHEET.TIMELINE),
+      replies: clearSheetRows_(SHEET.REPLIES),
+      feedback: clearSheetRows_(SHEET.FEEDBACK),
       counters: clearSheetRows_(SHEET.COUNTERS),
       foldersTrashed: trashed
     };
@@ -2184,11 +2457,13 @@ function listRequests_(filter) {
     return ja < jb ? 1 : -1;
   });
 
-  return out.map(listRowView_);
+  var replies = lastReplyMap_();
+  return out.map(function (r) { return listRowView_(r, replies[str_(r.jobId)]); });
 }
 
 /** ข้อมูลหนึ่งแถวในคิวงานของเจ้าหน้าที่ */
-function listRowView_(r) {
+function listRowView_(r, lastReplyAt) {
+  var sla = firstDraftSla_(r, lastReplyAt);
   var info = statusInfo_(r.status);
   var pinfo = priorityInfo_(livePriority_(r));
   var due = parseDate_(r.dueDate);
@@ -2210,8 +2485,12 @@ function listRowView_(r) {
     department: str_(r.department),
     projectName: str_(r.projectName),
     dueDate: str_(r.dueDate),
+    eventDate: str_(r.eventDate),
     daysLeft: daysLeft,
     overdue: daysLeft !== null && daysLeft < 0 && !closed,
+    draftDue: sla ? sla.dueDate : '',
+    draftDaysLeft: sla ? sla.daysLeft : null,
+    draftOverdue: !!(sla && sla.overdue),
     assignedTo: str_(r.assignedTo),
     revisionCount: int_(r.revisionCount),
     revisionLimit: int_(r.revisionLimit),
@@ -2271,7 +2550,8 @@ function standardFileName_(req, originalName, kind, seq) {
  * payload: { fileName, mimeType, dataB64 }
  * kind: 'source' (ผู้ขอแนบ) | 'final' (ไฟล์ส่งมอบ) | 'draft'
  */
-function uploadAttachment_(jobId, payload, kind, uploader) {
+function uploadAttachment_(jobId, payload, kind, uploader, options) {
+  var skipLimit = !!(options && options.skipLimit); // ใช้กับไฟล์ที่แนบตอนตอบข้อมูลเพิ่มเติม ซึ่งนับแยกต่อรอบ
   var req = getRequest_(jobId);
   if (!req) throw appError_('ไม่พบเลขที่คำขอ ' + jobId);
 
@@ -2288,7 +2568,7 @@ function uploadAttachment_(jobId, payload, kind, uploader) {
 
   var maxFiles = getSettingInt_('maxFiles', 8);
   var existing = filterBy_(SHEET.ATTACHMENTS, 'jobId', req.jobId);
-  if (fileKind === 'source') {
+  if (fileKind === 'source' && !skipLimit) {
     var sourceCount = existing.filter(function (f) { return str_(f.kind) === 'source'; }).length;
     if (sourceCount >= maxFiles) {
       throw appError_('แนบไฟล์ได้สูงสุด ' + maxFiles + ' ไฟล์ต่อหนึ่งคำขอ');
@@ -2437,11 +2717,13 @@ function listAssetLibrary_(filter) {
   var year = str_(f.year);
   var media = str_(f.mediaType);
 
-  var delivered = readAll_(SHEET.REQUESTS).filter(function (r) {
+  // รวมงานที่ย้ายไปเก็บถาวรแล้ว คลังผลงานจึงค้นงานเก่าได้ครบทุกปี
+  var delivered = readAll_(SHEET.REQUESTS).concat(readArchive_(SHEET.REQUESTS)).filter(function (r) {
     return str_(r.status) === STATUS.DELIVERED.key;
   });
 
-  var allFiles = readAll_(SHEET.ATTACHMENTS).filter(function (a) { return str_(a.kind) === 'final'; });
+  var allFiles = readAll_(SHEET.ATTACHMENTS).concat(readArchive_(SHEET.ATTACHMENTS))
+    .filter(function (a) { return str_(a.kind) === 'final'; });
   var filesByJob = {};
   for (var i = 0; i < allFiles.length; i++) {
     var jid = str_(allFiles[i].jobId);
@@ -2449,7 +2731,7 @@ function listAssetLibrary_(filter) {
     filesByJob[jid].push({ fileName: allFiles[i].fileName, fileUrl: allFiles[i].fileUrl });
   }
 
-  var allItems = readAll_(SHEET.DELIVERABLES);
+  var allItems = readAll_(SHEET.DELIVERABLES).concat(readArchive_(SHEET.DELIVERABLES));
   var itemsByJob = {};
   for (var j = 0; j < allItems.length; j++) {
     var k = str_(allItems[j].jobId);
@@ -2721,9 +3003,14 @@ function sendStatusChangeEmail_(req, fromStatus, toStatus, detail) {
       extra = '<div style="font-weight:600;margin-bottom:4px;">ไฟล์ฉบับสมบูรณ์</div>' +
         '<ul style="padding-left:20px;margin:4px 0 14px 0;font-size:13px;">' + lis + '</ul>';
     }
+    extra += emailNotice_('<strong>ช่วยประเมินความพึงพอใจ (ใช้เวลาไม่ถึง 1 นาที)</strong><br>' +
+      'ความเห็นของท่านช่วยให้ฝ่ายสื่อสารองค์กรพัฒนางานบริการได้ตรงความต้องการมากขึ้น');
+    ctaLabel = 'ดาวน์โหลดไฟล์และประเมินความพึงพอใจ';
   } else if (toStatus === STATUS.INFO_NEEDED.key) {
-    intro = 'เจ้าหน้าที่ขอข้อมูลเพิ่มเติมเพื่อให้สามารถเริ่มออกแบบได้ กรุณาตอบกลับอีเมลฉบับนี้';
-    extra = emailNotice_('<strong>ข้อมูลที่ยังขาด</strong><br>' + nl2br_(detail), '#dc2626');
+    intro = 'เจ้าหน้าที่ขอข้อมูลเพิ่มเติมเพื่อให้ดำเนินงานต่อได้ กรุณากดปุ่มด้านล่างเพื่อตอบและแนบไฟล์ผ่านระบบ ' +
+      'เมื่อส่งแล้วงานของท่านจะกลับเข้าคิวทันที';
+    extra = emailNotice_('<strong>ข้อมูลที่ต้องการเพิ่มเติม</strong><br>' + nl2br_(detail), '#dc2626');
+    ctaLabel = 'ตอบและแนบไฟล์';
   } else if (toStatus === STATUS.CANCELLED.key) {
     intro = 'คำขอของท่านถูกยกเลิก';
     extra = emailNotice_('<strong>เหตุผล</strong><br>' + nl2br_(req.cancelReason || detail), '#64748b');
@@ -2752,7 +3039,65 @@ function sendStatusChangeEmail_(req, fromStatus, toStatus, detail) {
     emailShell_('สถานะงานเปลี่ยนเป็น "' + info.label + '"', req.projectName, body, ctaLabel, ctaUrl));
 }
 
+/** แจ้งผู้ขอเมื่อเจ้าหน้าที่ปรับข้อมูลคำขอ (เมื่อเจ้าหน้าที่เลือกให้แจ้ง) */
+function sendRequestEditedEmail_(req, changes) {
+  var trackUrl = buildTrackUrl_(req);
+  var items = changes.map(function (c) {
+    return '<li style="margin-bottom:4px;">' + escapeHtml_(c.text) + '</li>';
+  }).join('');
+  var body =
+    '<p>เรียน คุณ' + escapeHtml_(req.requesterName) + '</p>' +
+    '<p>ฝ่ายสื่อสารองค์กรได้ปรับปรุงข้อมูลคำขอของท่านตามที่ได้ประสานงานกันไว้ ดังนี้</p>' +
+    '<ul style="padding-left:20px;margin:4px 0 14px 0;font-size:13px;line-height:1.7;">' + items + '</ul>' +
+    emailTable_([
+      ['เลขที่คำขอ', '<strong>' + escapeHtml_(req.jobId) + '</strong>'],
+      ['ชื่อโครงการ', escapeHtml_(req.projectName)],
+      ['กำหนดใช้งาน', escapeHtml_(formatThaiDate_(req.dueDate))]
+    ]) +
+    '<p style="font-size:13px;color:' + BRAND.textLight + ';">หากข้อมูลไม่ถูกต้อง กรุณาตอบกลับอีเมลฉบับนี้</p>';
+  return sendMail_(req.requesterEmail, '[' + req.jobId + '] ปรับปรุงข้อมูลคำขอ',
+    emailShell_('ปรับปรุงข้อมูลคำขอ', req.projectName, body, trackUrl ? 'ดูรายละเอียดงาน' : '', trackUrl));
+}
+
 /* --------------------------------------------------- อีเมลถึงเจ้าหน้าที่ */
+
+/** แจ้งเจ้าหน้าที่เมื่อผู้ขอส่งข้อมูลเพิ่มเติมผ่านระบบ */
+function sendInfoReplyToStaffEmail_(req, reply) {
+  var to = staffRecipients_();
+  if (to.length === 0) return false;
+  var adminUrl = adminJobUrl_(req.jobId);
+  var body =
+    '<p>ผู้ขอรับบริการส่งข้อมูลเพิ่มเติมแล้ว งานกลับเข้าคิวในสถานะ "' + escapeHtml_(reply.statusLabel) + '"</p>' +
+    emailTable_([
+      ['เลขที่คำขอ', '<strong>' + escapeHtml_(req.jobId) + '</strong>'],
+      ['ชื่อโครงการ', escapeHtml_(req.projectName)],
+      ['ผู้ส่ง', escapeHtml_(req.requesterName)],
+      ['ไฟล์แนบเพิ่ม', int_(reply.fileCount) + ' ไฟล์' +
+        (reply.fileNames && reply.fileNames.length ? ' (' + escapeHtml_(reply.fileNames.join(', ')) + ')' : '')]
+    ]) +
+    (reply.question ? emailNotice_('<strong>สิ่งที่ขอไป</strong><br>' + nl2br_(reply.question), '#64748b') : '') +
+    (reply.answer ? emailNotice_('<strong>คำตอบจากผู้ขอ</strong><br>' + nl2br_(reply.answer)) : '');
+  return sendMail_(to, '[' + req.jobId + '] ผู้ขอส่งข้อมูลเพิ่มเติมแล้ว',
+    emailShell_('ได้รับข้อมูลเพิ่มเติม', req.projectName, body, adminUrl ? 'เปิดคำขอนี้' : '', adminUrl));
+}
+
+/** แจ้งเจ้าหน้าที่ทันทีเมื่อได้คะแนนความพึงพอใจต่ำ เพื่อให้ติดต่อกลับ */
+function sendLowRatingEmail_(req, rating, comment) {
+  var to = staffRecipients_();
+  if (to.length === 0) return false;
+  var adminUrl = adminJobUrl_(req.jobId);
+  var body =
+    '<p>ผู้ขอรับบริการให้คะแนนความพึงพอใจต่ำ ควรติดต่อกลับเพื่อสอบถามและแก้ไข</p>' +
+    emailTable_([
+      ['เลขที่คำขอ', '<strong>' + escapeHtml_(req.jobId) + '</strong>'],
+      ['ชื่อโครงการ', escapeHtml_(req.projectName)],
+      ['ผู้ประเมิน', escapeHtml_(req.requesterName) + ' (' + escapeHtml_(req.requesterEmail) + ')'],
+      ['คะแนน', '<strong style="color:#dc2626;">' + int_(rating) + ' / 5</strong>']
+    ]) +
+    (comment ? emailNotice_('<strong>ความเห็น</strong><br>' + nl2br_(comment), '#dc2626') : '');
+  return sendMail_(to, '[' + req.jobId + '] คะแนนความพึงพอใจ ' + int_(rating) + '/5',
+    emailShell_('ผลประเมินที่ควรติดตาม', req.projectName, body, adminUrl ? 'เปิดคำขอนี้' : '', adminUrl));
+}
 
 /** แจ้งเจ้าหน้าที่เมื่อมีคำขอใหม่ */
 function sendStaffNewRequestEmail_(req) {
@@ -2835,13 +3180,20 @@ function dailyReminder() {
   var overdue = [];
   var dueSoon = [];
   var waiting = [];
+  var draftLate = [];
+  var draftSoon = [];
+  var replies = lastReplyMap_();
   for (var i = 0; i < rows.length; i++) {
     var left = daysBetween_(today, rows[i].dueDate);
     if (left !== null && left < 0) overdue.push(rows[i]);
     else if (left !== null && left <= 3) dueSoon.push(rows[i]);
-    if (str_(rows[i].status) === STATUS.NEW.key) waiting.push(rows[i]);
+    if (str_(rows[i].status) === STATUS.NEW.key && str_(rows[i].submittedAt)) waiting.push(rows[i]);
+    var sla = firstDraftSla_(rows[i], replies[str_(rows[i].jobId)]);
+    if (sla && sla.overdue) draftLate.push(rows[i]);
+    else if (sla && sla.daysLeft <= 1) draftSoon.push(rows[i]);
   }
-  if (overdue.length === 0 && dueSoon.length === 0 && waiting.length === 0) return;
+  if (overdue.length === 0 && dueSoon.length === 0 && waiting.length === 0 &&
+    draftLate.length === 0 && draftSoon.length === 0) return;
 
   function listHtml(items, note) {
     if (items.length === 0) return '';
@@ -2860,6 +3212,8 @@ function dailyReminder() {
     '<p>สรุปคิวงานออกแบบประจำวันที่ ' + escapeHtml_(formatThaiDate_(today)) + '</p>' +
     listHtml(overdue, 'เกินกำหนดส่ง (' + overdue.length + ' งาน)') +
     listHtml(dueSoon, 'ครบกำหนดภายใน 3 วัน (' + dueSoon.length + ' งาน)') +
+    listHtml(draftLate, 'เกินกำหนดส่งร่างแรกตามเงื่อนไขบริการ (' + draftLate.length + ' งาน)') +
+    listHtml(draftSoon, 'ต้องส่งร่างแรกภายในวันนี้หรือพรุ่งนี้ (' + draftSoon.length + ' งาน)') +
     listHtml(waiting, 'รอเริ่มดำเนินการ (' + waiting.length + ' งาน)');
 
   sendMail_(to, 'สรุปคิวงานออกแบบประจำวัน ' + formatThaiDate_(today),
@@ -3480,7 +3834,8 @@ function getStats_(filter) {
   var from = startOfDay_(f.from);
   var to = f.to ? new Date(startOfDay_(f.to).getTime() + 86400000) : null;
 
-  var all = readAll_(SHEET.REQUESTS);
+  // รวมงานที่ย้ายไปเก็บถาวรแล้ว ตัวเลขย้อนหลังรายปีจึงไม่หายไปหลังย้ายข้อมูล
+  var all = readAll_(SHEET.REQUESTS).concat(readArchive_(SHEET.REQUESTS));
   var rows = all.filter(function (r) {
     var created = parseDate_(r.createdAt);
     if (!created) return false;
@@ -3546,7 +3901,7 @@ function getStats_(filter) {
 
   // นับตามประเภทสื่อ (นับตามจำนวนรายการชิ้นงาน)
   var mediaCount = {};
-  var deliverables = readAll_(SHEET.DELIVERABLES);
+  var deliverables = readAll_(SHEET.DELIVERABLES).concat(readArchive_(SHEET.DELIVERABLES));
   for (var d = 0; d < deliverables.length; d++) {
     if (!jobIds[str_(deliverables[d].jobId)]) continue;
     var label = str_(deliverables[d].mediaLabel) || 'ไม่ระบุ';
@@ -3609,6 +3964,7 @@ function getStats_(filter) {
     avgFirstDraftDays: average(firstDraftDays),
     avgRevisions: average(revisionCounts),
     onTimeRate: onTimeBase > 0 ? Math.round((onTime / onTimeBase) * 100) : null,
+    satisfaction: satisfactionStats_(rows, totals.delivered),
     briefCoverage: (function () {
       var withBrief = rows.filter(function (r) { return str_(r.briefStatus) === 'DONE'; }).length;
       return rows.length > 0 ? Math.round((withBrief / rows.length) * 100) : null;
@@ -3616,7 +3972,7 @@ function getStats_(filter) {
     completeOnFirstSubmit: (function () {
       // ร้อยละของคำขอที่ข้อมูลครบตั้งแต่ครั้งแรก (ไม่ถูกตีกลับขอข้อมูลเพิ่ม)
       if (rows.length === 0) return null;
-      var timeline = readAll_(SHEET.TIMELINE);
+      var timeline = readAll_(SHEET.TIMELINE).concat(readArchive_(SHEET.TIMELINE));
       var bounced = {};
       for (var i = 0; i < timeline.length; i++) {
         if (str_(timeline[i].toStatus) === STATUS.INFO_NEEDED.key) {
@@ -3632,6 +3988,42 @@ function getStats_(filter) {
   };
 }
 
+/**
+ * สรุปผลประเมินความพึงพอใจของงานในช่วงเวลาที่เลือก
+ * responseRate = ร้อยละของงานที่ส่งมอบแล้วที่ผู้ขอตอบแบบประเมิน
+ */
+function satisfactionStats_(rows, deliveredCount) {
+  var byJob = {};
+  for (var i = 0; i < rows.length; i++) byJob[str_(rows[i].jobId)] = rows[i];
+  var all = readAll_(SHEET.FEEDBACK).concat(readArchive_(SHEET.FEEDBACK)).filter(function (f) {
+    return !!byJob[str_(f.jobId)];
+  });
+  var dist = [0, 0, 0, 0, 0];
+  var sum = 0;
+  for (var j = 0; j < all.length; j++) {
+    var score = int_(all[j].rating);
+    if (score < 1 || score > 5) continue;
+    dist[score - 1]++;
+    sum += score;
+  }
+  var count = dist[0] + dist[1] + dist[2] + dist[3] + dist[4];
+  var recent = sortByTime_(all.filter(function (f) { return !!str_(f.comment); }), 'updatedAt')
+    .reverse().slice(0, 6).map(function (f) {
+      var r = byJob[str_(f.jobId)];
+      return {
+        jobId: str_(f.jobId), projectName: str_(r.projectName), rating: int_(f.rating),
+        comment: str_(f.comment), at: str_(f.updatedAt) || str_(f.createdAt)
+      };
+    });
+  return {
+    count: count,
+    avg: count > 0 ? Math.round((sum / count) * 10) / 10 : null,
+    responseRate: deliveredCount > 0 ? Math.round((count / deliveredCount) * 100) : null,
+    dist: dist,
+    recent: recent
+  };
+}
+
 /** ข้อมูลสำหรับส่งออกเป็น CSV (รายงานประจำปี) */
 function exportRows_(filter) {
   var rows = listRequests_(filter || {});
@@ -3644,11 +4036,16 @@ function exportRows_(filter) {
   }
   var header = ['เลขที่คำขอ', 'วันที่ยื่น', 'สถานะ', 'ความเร่งด่วน', 'ผู้ขอรับบริการ', 'อีเมล',
     'โทรศัพท์', 'หน่วยงาน', 'ชื่อโครงการ', 'ชิ้นงาน', 'กำหนดใช้งาน', 'วันที่ส่งมอบ',
-    'ระยะเวลาดำเนินการ (วัน)', 'ผู้รับผิดชอบ', 'รอบแก้ไข'];
+    'ระยะเวลาดำเนินการ (วัน)', 'ผู้รับผิดชอบ', 'รอบแก้ไข', 'คะแนนความพึงพอใจ', 'ความเห็นผู้ขอ'];
+  var feedback = {};
+  var fb = readAll_(SHEET.FEEDBACK);
+  for (var f = 0; f < fb.length; f++) feedback[str_(fb[f].jobId)] = fb[f];
   var body = rows.map(function (r) {
+    var rating = feedback[str_(r.jobId)];
     return [r.jobId, r.createdAt, r.statusLabel, r.priorityLabel, r.requesterName, r.requesterEmail,
       r.requesterPhone, r.department, r.projectName, media[str_(r.jobId)] || '', r.dueDate,
-      r.deliveredAt, r.leadTimeDays, r.assignedTo, r.revisionCount + '/' + r.revisionLimit];
+      r.deliveredAt, r.leadTimeDays, r.assignedTo, r.revisionCount + '/' + r.revisionLimit,
+      rating ? int_(rating.rating) : '', rating ? str_(rating.comment) : ''];
   });
   return { header: header, rows: body };
 }
@@ -3686,7 +4083,7 @@ function jsonForHtml_(obj) {
 function doGet(e) {
   var params = (e && e.parameter) ? e.parameter : {};
   var page = sanitizeParam_(params.page, /[^a-z]/g, 20);
-  var allowedPages = ['home', 'form', 'track', 'login', 'admin', 'setup'];
+  var allowedPages = ['home', 'form', 'track', 'login', 'admin', 'setup', 'resources'];
   if (allowedPages.indexOf(page) < 0) page = 'home';
 
   // ติดตั้งระบบให้อัตโนมัติเมื่อเปิดเว็บแอปครั้งแรก
@@ -3770,6 +4167,7 @@ function bootstrapData_() {
     statusLabels: Object.keys(STATUS).map(function (k) {
       return { key: k, label: STATUS[k].label, color: STATUS[k].color, icon: STATUS[k].icon };
     }),
+    resourceCategories: RESOURCE_CATEGORIES,
     settings: {
       revisionLimit: getSettingInt_('revisionLimit', 3),
       minLeadDays: getSettingInt_('minLeadDays', 7),
@@ -3931,13 +4329,22 @@ function apiAdminGet(token, jobId) {
  */
 function adminJobView_(jobId) {
   var full = getRequestFull_(jobId);
+  var archived = false;
+  if (!full) {
+    // งานที่ย้ายไปเก็บถาวรแล้ว เปิดดูได้แบบอ่านอย่างเดียว
+    full = archivedRequestFull_(jobId);
+    archived = !!full;
+  }
   if (!full) return null;
   var r = full.request;
   var info = statusInfo_(r.status);
   var p = priorityInfo_(livePriority_(r));
   var approval = draftApproval_(full.timeline);
   var inReview = info.key === STATUS.REVIEW.key;
+  var lastReply = full.replies.length ? str_(full.replies[full.replies.length - 1].createdAt) : '';
+  var sla = archived ? null : firstDraftSla_(r, lastReply);
   return {
+    archived: archived,
     request: {
       jobId: r.jobId,
       createdAt: str_(r.createdAt),
@@ -3983,9 +4390,17 @@ function adminJobView_(jobId) {
       deliveredAt: str_(r.deliveredAt),
       leadTimeDays: str_(r.leadTimeDays),
       cancelReason: str_(r.cancelReason),
+      firstDraftAt: str_(r.firstDraftAt),
+      draftDue: sla ? sla.dueDate : '',
+      draftDaysLeft: sla ? sla.daysLeft : null,
+      draftOverdue: !!(sla && sla.overdue),
+      infoRequest: info.key === STATUS.INFO_NEEDED.key ? infoQuestion_(full.timeline) : null,
       trackUrl: buildTrackUrl_(r)
     },
-    row: listRowView_(r),
+    row: archived ? null : listRowView_(r, lastReply),
+    edit: archived ? null : requestToPayload_(r, full.deliverables),
+    replies: full.replies.map(replyView_),
+    feedback: feedbackView_(full.feedback),
     deliverables: full.deliverables.map(function (d) {
       return {
         seq: int_(d.seq), mediaLabel: str_(d.mediaLabel), size: str_(d.size),
@@ -4079,6 +4494,95 @@ function apiAdminRegenerateBrief(token, jobId) {
   });
 }
 
+/** เจ้าหน้าที่แก้ไขข้อมูลคำขอ */
+function apiAdminEditRequest(token, jobId, payload, options) {
+  return respond_(function () {
+    var me = requireAuth_(token);
+    var result = editRequest_(jobId, payload, me.name || me.email, options);
+    result.job = adminJobView_(jobId);
+    return result;
+  });
+}
+
+/* ------------------------------------------ ผู้ขอตอบข้อมูลเพิ่มเติม / ประเมิน */
+
+function apiInfoUpload(jobId, email, token, filePayload) {
+  return respond_(function () {
+    return uploadInfoFile_(jobId, email, token, filePayload);
+  });
+}
+
+function apiInfoReply(jobId, email, token, answer) {
+  return respond_(function () {
+    return submitInfoReply_(jobId, email, token, answer);
+  });
+}
+
+function apiSubmitFeedback(jobId, email, token, rating, comment) {
+  return respond_(function () {
+    return submitFeedback_(jobId, email, token, rating, comment);
+  });
+}
+
+/* ------------------------------------------------------- คลังไฟล์ CI */
+
+/** รายการไฟล์ CI สำหรับทุกคน (ไม่ต้องเข้าสู่ระบบ) */
+function apiResources() {
+  return respond_(function () {
+    return { categories: RESOURCE_CATEGORIES, items: listResources_(false) };
+  });
+}
+
+function apiAdminResources(token) {
+  return respond_(function () {
+    requireAuth_(token);
+    var base = safeWebAppUrl_();
+    return {
+      categories: RESOURCE_CATEGORIES,
+      items: listResources_(true),
+      pageUrl: base ? base + '?page=resources' : ''
+    };
+  });
+}
+
+function apiAdminSaveResource(token, payload) {
+  return respond_(function () {
+    var me = requireAuth_(token);
+    // ไม่ล็อกทั้งระบบระหว่างอัปโหลดไฟล์ใหญ่ เพราะจะทำให้ผู้ใช้อื่นรอนาน (คลังไฟล์ไม่มีการออกเลข)
+    var item = saveResource_(payload, me.name || me.email);
+    return { item: item, items: listResources_(true) };
+  });
+}
+
+function apiAdminDeleteResource(token, id) {
+  return respond_(function () {
+    requireAuth_(token);
+    deleteResource_(id);
+    return { items: listResources_(true) };
+  });
+}
+
+/* ------------------------------------------------- ย้ายข้อมูลเก่าไปเก็บถาวร */
+
+var ARCHIVE_CONFIRM_TEXT = 'ย้ายข้อมูล';
+
+function apiAdminArchivePreview(token, cutoff) {
+  return respond_(function () {
+    requireAdmin_(token);
+    return previewArchive_(cutoff);
+  });
+}
+
+function apiAdminArchiveRun(token, cutoff, confirmText) {
+  return respond_(function () {
+    var me = requireAdmin_(token);
+    if (str_(confirmText) !== ARCHIVE_CONFIRM_TEXT) {
+      throw appError_('กรุณาพิมพ์คำว่า "' + ARCHIVE_CONFIRM_TEXT + '" ให้ตรงเพื่อยืนยัน');
+    }
+    return runArchive_(cutoff, me.name || me.email);
+  });
+}
+
 /**
  * ลบคำขอถาวร (เฉพาะผู้ดูแลระบบ)
  * ต้องพิมพ์เลขที่คำขอยืนยันให้ตรง เพื่อกันการกดพลาด
@@ -4143,6 +4647,7 @@ function apiAdminSettings(token) {
     var base = safeWebAppUrl_();
     return {
       settings: out,
+      archive: archiveInfo_(),
       hasApiKey: !!getProp_(PROP.ANTHROPIC_API_KEY),
       notifyTo: staffRecipients_(),
       ownerEmail: ownerEmail_(),
@@ -4246,5 +4751,558 @@ function apiAdminSaveUser(token, payload) {
   return respond_(function () {
     return saveUser_(token, payload);
   });
+}
+
+
+/* ==========================================================================
+   11_Requester.gs
+   ========================================================================== */
+
+/**
+ * 11_Requester.gs — สิ่งที่ผู้ขอรับบริการทำเองได้ผ่านหน้าติดตาม
+ *  - ตอบ "รอข้อมูลเพิ่มเติม" พร้อมแนบไฟล์ แล้วงานกลับเข้าคิวอัตโนมัติ
+ *  - ประเมินความพึงพอใจหลังส่งมอบ
+ * ยืนยันตัวตนด้วย token จากลิงก์ในอีเมล หรืออีเมลที่ใช้ยื่นคำขอ เหมือนหน้าติดตาม
+ */
+
+/** ตรวจสิทธิ์ผู้ขอ คืนแถวคำขอ */
+function requireRequester_(jobId, email, token) {
+  var id = str_(jobId).toUpperCase();
+  var req = getRequest_(id);
+  if (!req) throw appError_('ไม่พบเลขที่คำขอ ' + id);
+  var ok = (token && verifyTrackToken_(id, token)) ||
+    (email && str_(email).toLowerCase() === str_(req.requesterEmail).toLowerCase());
+  if (!ok) throw appError_('ไม่มีสิทธิ์ดำเนินการกับคำขอนี้ กรุณาเปิดจากลิงก์ในอีเมล หรือกรอกอีเมลที่ใช้ยื่นคำขอ');
+  return req;
+}
+
+/* ------------------------------------------- ตอบ "รอข้อมูลเพิ่มเติม" */
+
+/**
+ * คำถามล่าสุดที่เจ้าหน้าที่ขอข้อมูลเพิ่ม (จากประวัติ เรียงเก่าไปใหม่)
+ * fromStatus คือสถานะก่อนขอข้อมูล ใช้คืนงานกลับไปที่เดิมเมื่อผู้ขอตอบแล้ว
+ */
+function infoQuestion_(timeline) {
+  var found = null;
+  for (var i = 0; i < timeline.length; i++) {
+    var t = timeline[i];
+    if (str_(t.action) === 'STATUS' && str_(t.toStatus) === STATUS.INFO_NEEDED.key) {
+      found = { question: str_(t.detail), at: str_(t.at), fromStatus: str_(t.fromStatus), index: i };
+    }
+  }
+  return found;
+}
+
+/**
+ * ชื่อไฟล์ที่ผู้ขอแนบหลังเจ้าหน้าที่ขอข้อมูลครั้งล่าสุด
+ * นับจากลำดับในประวัติ (ทุกครั้งที่แนบจะบันทึก INFO_FILE ต่อท้าย) แทนการเทียบเวลา
+ * เพราะไฟล์ที่แนบในวินาทีเดียวกับคำถามจะแยกไม่ออกว่ามาก่อนหรือหลัง
+ */
+function infoFilesSince_(timeline, question) {
+  var from = question ? question.index : -1;
+  var names = [];
+  for (var i = from + 1; i < timeline.length; i++) {
+    if (str_(timeline[i].action) === 'INFO_FILE') names.push(str_(timeline[i].detail).replace(/^[^:]*:\s*/, ''));
+  }
+  return names;
+}
+
+/**
+ * ผู้ขอแนบไฟล์ประกอบคำตอบ (ทำได้เฉพาะตอนสถานะรอข้อมูลเพิ่มเติม)
+ * จำกัดจำนวนต่อการตอบหนึ่งครั้งตามค่า maxFiles
+ */
+function uploadInfoFile_(jobId, email, token, payload) {
+  var req = requireRequester_(jobId, email, token);
+  if (str_(req.status) !== STATUS.INFO_NEEDED.key) {
+    throw appError_('แนบไฟล์เพิ่มได้เฉพาะตอนที่เจ้าหน้าที่ขอข้อมูลเพิ่มเติม ' +
+      'หากต้องการส่งไฟล์ในขั้นตอนอื่น กรุณาติดต่อฝ่ายสื่อสารองค์กร');
+  }
+  var timeline = getTimeline_(req.jobId);
+  var max = getSettingInt_('maxFiles', 8);
+  if (infoFilesSince_(timeline, infoQuestion_(timeline)).length >= max) {
+    throw appError_('แนบไฟล์ได้สูงสุด ' + max + ' ไฟล์ต่อการตอบหนึ่งครั้ง');
+  }
+  var saved = uploadAttachment_(req.jobId, payload, 'source', req.requesterEmail, { skipLimit: true });
+  logTimeline_(req.jobId, req.requesterName, 'INFO_FILE', '', '', 'แนบไฟล์ประกอบข้อมูลเพิ่มเติม: ' + saved.fileName);
+  return saved;
+}
+
+/**
+ * ผู้ขอส่งข้อมูลเพิ่มเติม งานกลับไปสถานะก่อนขอข้อมูล (ถ้าไม่ทราบให้กลับไป "รับคำขอ")
+ * แจ้งเจ้าหน้าที่ทางอีเมล และนับกำหนดส่งร่างแรกใหม่จากวันที่ข้อมูลครบ
+ */
+function submitInfoReply_(jobId, email, token, answer) {
+  var id = str_(jobId).toUpperCase();
+  var result = withLock_(function () {
+    var req = requireRequester_(id, email, token);
+    if (str_(req.status) !== STATUS.INFO_NEEDED.key) {
+      throw appError_('คำขอนี้ไม่ได้อยู่ในสถานะรอข้อมูลเพิ่มเติมแล้ว ' +
+        'อาจมีเจ้าหน้าที่ดำเนินการต่อไปแล้ว กรุณารีเฟรชหน้านี้');
+    }
+    var timeline = getTimeline_(id);
+    var q = infoQuestion_(timeline) || { question: '', at: '', fromStatus: '', index: -1 };
+    var files = infoFilesSince_(timeline, q);
+    var text = truncate_(answer, 3000);
+    if (text.length < 2 && files.length === 0) {
+      throw appError_('กรุณาพิมพ์ข้อมูลที่ต้องการส่ง หรือแนบไฟล์อย่างน้อย 1 ไฟล์');
+    }
+
+    var back = str_(q.fromStatus).toUpperCase();
+    var allowed = [STATUS.NEW.key, STATUS.DESIGNING.key, STATUS.REVIEW.key, STATUS.REVISING.key];
+    if (allowed.indexOf(back) < 0) back = STATUS.NEW.key;
+
+    insert_(SHEET.REPLIES, {
+      id: newId_('Q'),
+      jobId: id,
+      createdAt: nowIso_(),
+      byName: str_(req.requesterName),
+      byEmail: str_(req.requesterEmail),
+      question: truncate_(q.question, 2000),
+      answer: text,
+      fileCount: files.length,
+      returnedTo: back
+    });
+    update_(SHEET.REQUESTS, req._row, {
+      status: back,
+      attachmentCount: filterBy_(SHEET.ATTACHMENTS, 'jobId', id).length,
+      updatedAt: nowIso_(),
+      updatedBy: str_(req.requesterEmail)
+    });
+    logTimeline_(id, req.requesterName, 'INFO_REPLY', STATUS.INFO_NEEDED.key, back,
+      'ผู้ขอส่งข้อมูลเพิ่มเติม' + (files.length ? ' พร้อมไฟล์ ' + files.length + ' ไฟล์' : '') +
+      (text ? ': ' + truncate_(text, 300) : ''));
+    return { jobId: id, status: back, statusLabel: statusInfo_(back).label, fileCount: files.length,
+      answer: text, question: q.question, fileNames: files };
+  });
+
+  try {
+    sendInfoReplyToStaffEmail_(getRequest_(id), result);
+  } catch (err) {
+    logTimeline_(id, 'system', 'EMAIL_ERROR', '', '', 'แจ้งเจ้าหน้าที่เรื่องข้อมูลเพิ่มเติมไม่สำเร็จ: ' + err.message);
+  }
+  return { jobId: result.jobId, status: result.status, statusLabel: result.statusLabel, fileCount: result.fileCount };
+}
+
+/** ข้อมูลที่ผู้ขอตอบกลับ สำหรับหน้าเจ้าหน้าที่ */
+function replyView_(r) {
+  return {
+    createdAt: str_(r.createdAt),
+    byName: str_(r.byName),
+    question: str_(r.question),
+    answer: str_(r.answer),
+    fileCount: int_(r.fileCount),
+    returnedTo: str_(r.returnedTo),
+    returnedToLabel: str_(r.returnedTo) ? statusInfo_(r.returnedTo).label : ''
+  };
+}
+
+/* ------------------------------------------- ประเมินความพึงพอใจ */
+
+var RATING_LABELS = ['', 'ควรปรับปรุง', 'พอใช้', 'ดี', 'ดีมาก', 'ดีเยี่ยม'];
+
+function feedbackView_(f) {
+  if (!f) return null;
+  var rating = int_(f.rating);
+  return {
+    rating: rating,
+    ratingLabel: RATING_LABELS[rating] || '',
+    comment: str_(f.comment),
+    createdAt: str_(f.createdAt),
+    updatedAt: str_(f.updatedAt)
+  };
+}
+
+/**
+ * ผู้ขอประเมินความพึงพอใจหลังส่งมอบ (1-5) แก้คะแนนภายหลังได้ เก็บงานละหนึ่งแถว
+ * คะแนน 1-2 แจ้งเจ้าหน้าที่ทันที เพื่อให้ติดต่อกลับได้เร็ว
+ */
+function submitFeedback_(jobId, email, token, rating, comment) {
+  var id = str_(jobId).toUpperCase();
+  var score = int_(rating, 0);
+  if (score < 1 || score > 5) throw appError_('กรุณาเลือกคะแนน 1 ถึง 5 ดาว');
+  var text = truncate_(comment, 1000);
+
+  var result = withLock_(function () {
+    var req = requireRequester_(id, email, token);
+    if (str_(req.status) !== STATUS.DELIVERED.key) {
+      throw appError_('ประเมินความพึงพอใจได้หลังจากส่งมอบชิ้นงานแล้วเท่านั้น');
+    }
+    var existing = findBy_(SHEET.FEEDBACK, 'jobId', id);
+    var previous = existing ? int_(existing.rating) : 0;
+    if (existing) {
+      update_(SHEET.FEEDBACK, existing._row, { rating: score, comment: text, updatedAt: nowIso_() });
+    } else {
+      insert_(SHEET.FEEDBACK, {
+        id: newId_('S'), jobId: id, createdAt: nowIso_(), updatedAt: nowIso_(),
+        rating: score, comment: text, byEmail: str_(req.requesterEmail)
+      });
+    }
+    logTimeline_(id, req.requesterName, 'FEEDBACK', '', '',
+      (existing ? 'ผู้ขอแก้ไขผลประเมินเป็น ' : 'ผู้ขอประเมินความพึงพอใจ ') + score + '/5' +
+      (text ? ': ' + truncate_(text, 200) : ''));
+    return { jobId: id, rating: score, updated: !!existing, alert: score <= 2 && (previous === 0 || previous > 2) };
+  });
+
+  if (result.alert) {
+    try {
+      sendLowRatingEmail_(getRequest_(id), score, text);
+    } catch (err) {
+      logTimeline_(id, 'system', 'EMAIL_ERROR', '', '', 'แจ้งเจ้าหน้าที่เรื่องผลประเมินไม่สำเร็จ: ' + err.message);
+    }
+  }
+  return { jobId: id, rating: result.rating, updated: result.updated };
+}
+
+
+/* ==========================================================================
+   12_Library.gs
+   ========================================================================== */
+
+/**
+ * 12_Library.gs — คลังไฟล์ CI ให้หน่วยงานดาวน์โหลดเอง
+ * เช่น โลโก้ เทมเพลตโปสเตอร์ เทมเพลตสไลด์ ฟอนต์ คู่มือ CI
+ * งานเล็กที่หน่วยงานทำเองได้จะได้ไม่ต้องยื่นคำขอ
+ *
+ * แต่ละรายการเป็นได้ 2 แบบ
+ *  - file : ไฟล์ที่อัปโหลดเก็บในโฟลเดอร์ "คลังไฟล์ CI" บน Drive และเปิดสิทธิ์ให้ดาวน์โหลดผ่านลิงก์
+ *  - link : ลิงก์ไปยังที่อื่น เช่น เทมเพลต Canva หรือโฟลเดอร์ Drive ที่มีไฟล์ขนาดใหญ่
+ */
+
+var RESOURCE_MAX_MB = 25;
+var RESOURCE_EXTRA_TYPES = 'ttf,otf,woff,woff2,indd,idml,key,mp4,mov,gif';
+
+/** โฟลเดอร์เก็บไฟล์ CI (สร้างให้อัตโนมัติเมื่อใช้ครั้งแรก) */
+function resourceFolder_() {
+  var rootId = getProp_(PROP.ROOT_FOLDER_ID);
+  var root = null;
+  if (rootId) {
+    try { root = DriveApp.getFolderById(rootId); } catch (err) { root = null; }
+  }
+  return ensureFolder_(root, 'คลังไฟล์ CI (ดาวน์โหลดได้)', PROP.RESOURCE_FOLDER_ID);
+}
+
+function resourceView_(r, includeHidden) {
+  var kind = str_(r.kind) === 'link' ? 'link' : 'file';
+  var fileId = str_(r.fileId);
+  var name = str_(r.fileName);
+  var dot = name.lastIndexOf('.');
+  var out = {
+    id: str_(r.id),
+    title: str_(r.title),
+    description: str_(r.description),
+    category: str_(r.category) || 'อื่น ๆ',
+    kind: kind,
+    url: str_(r.url),
+    downloadUrl: kind === 'file' && fileId
+      ? 'https://drive.google.com/uc?export=download&id=' + encodeURIComponent(fileId) : str_(r.url),
+    fileName: name,
+    ext: dot > 0 ? name.substring(dot + 1).toUpperCase() : '',
+    sizeLabel: kind === 'file' ? formatBytes_(r.sizeBytes) : '',
+    updatedAt: str_(r.updatedAt) || str_(r.createdAt),
+    sortOrder: int_(r.sortOrder, 0)
+  };
+  if (includeHidden) {
+    out.active = str_(r.active).toUpperCase() !== 'FALSE';
+    out.createdBy = str_(r.createdBy);
+  }
+  return out;
+}
+
+/** รายการไฟล์ CI เรียงตามหมวด ลำดับ และชื่อ (includeHidden สำหรับหน้าเจ้าหน้าที่) */
+function listResources_(includeHidden) {
+  var order = {};
+  for (var i = 0; i < RESOURCE_CATEGORIES.length; i++) order[RESOURCE_CATEGORIES[i]] = i;
+  return readAll_(SHEET.RESOURCES)
+    .filter(function (r) { return includeHidden || str_(r.active).toUpperCase() !== 'FALSE'; })
+    .map(function (r) { return resourceView_(r, includeHidden); })
+    .sort(function (a, b) {
+      var ca = order.hasOwnProperty(a.category) ? order[a.category] : 99;
+      var cb = order.hasOwnProperty(b.category) ? order[b.category] : 99;
+      if (ca !== cb) return ca - cb;
+      if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder;
+      return a.title < b.title ? -1 : (a.title > b.title ? 1 : 0);
+    });
+}
+
+/** เก็บไฟล์ลงโฟลเดอร์ CI และเปิดให้ดาวน์โหลดผ่านลิงก์ */
+function storeResourceFile_(file) {
+  var fileName = truncate_(pick_(file, 'fileName', ''), 200);
+  var dataB64 = str_(pick_(file, 'dataB64', ''));
+  if (!fileName || !dataB64) throw appError_('กรุณาเลือกไฟล์ที่ต้องการอัปโหลด');
+  var allowed = getSetting_('allowedFileTypes', DEFAULT_SETTINGS.allowedFileTypes) + ',' + RESOURCE_EXTRA_TYPES;
+  if (!isAllowedFile_(fileName, allowed)) {
+    throw appError_('ไม่รองรับไฟล์ชนิดนี้ ถ้าจำเป็นให้อัปโหลดไว้ใน Drive แล้วเพิ่มเป็น "ลิงก์" แทน');
+  }
+  var bytes;
+  try {
+    bytes = Utilities.base64Decode(dataB64);
+  } catch (err) {
+    throw appError_('ไฟล์เสียหายหรืออ่านไม่ได้ กรุณาลองใหม่');
+  }
+  if (bytes.length > RESOURCE_MAX_MB * 1024 * 1024) {
+    throw appError_('ไฟล์ใหญ่เกิน ' + RESOURCE_MAX_MB + ' MB กรุณาอัปโหลดไว้ใน Drive แล้วเพิ่มเป็น "ลิงก์" แทน');
+  }
+  var mime = str_(pick_(file, 'mimeType', '')) || 'application/octet-stream';
+  var created = resourceFolder_().createFile(Utilities.newBlob(bytes, mime, safeFileName_(fileName)));
+  var url = shareFileSafely_(created);
+  return { fileId: created.getId(), url: url, fileName: safeFileName_(fileName), mimeType: mime, sizeBytes: bytes.length };
+}
+
+/**
+ * เพิ่มหรือแก้ไขรายการในคลังไฟล์ CI
+ * payload: { id?, title, description, category, kind: 'file'|'link', url?, file?: {fileName, mimeType, dataB64},
+ *            active?, sortOrder? }
+ */
+function saveResource_(payload, actor) {
+  var p = payload || {};
+  var id = str_(p.id);
+  var title = truncate_(pick_(p, 'title', ''), 150);
+  if (title.length < 2) throw appError_('กรุณาตั้งชื่อรายการ เช่น "โลโก้คณะศิลปศาสตร์ (ไฟล์เวกเตอร์)"');
+  var category = str_(p.category);
+  if (RESOURCE_CATEGORIES.indexOf(category) < 0) category = 'อื่น ๆ';
+  var kind = str_(p.kind) === 'link' ? 'link' : 'file';
+  var existing = id ? findBy_(SHEET.RESOURCES, 'id', id) : null;
+  if (id && !existing) throw appError_('ไม่พบรายการนี้ อาจถูกลบไปแล้ว กรุณารีเฟรชหน้า');
+
+  var patch = {
+    title: title,
+    description: truncate_(pick_(p, 'description', ''), 500),
+    category: category,
+    kind: kind,
+    active: p.active === false || str_(p.active) === 'false' ? 'FALSE' : 'TRUE',
+    sortOrder: Math.max(0, Math.min(999, int_(p.sortOrder, 0))),
+    updatedAt: nowIso_()
+  };
+
+  var newFile = p.file && str_(p.file.dataB64) ? p.file : null;
+  if (kind === 'link') {
+    var url = truncate_(pick_(p, 'url', ''), 2000);
+    if (!isValidUrl_(url)) throw appError_('ลิงก์ต้องขึ้นต้นด้วย http:// หรือ https://');
+    patch.url = url;
+    patch.fileId = '';
+    patch.fileName = '';
+    patch.mimeType = '';
+    patch.sizeBytes = '';
+  } else if (newFile) {
+    var stored = storeResourceFile_(newFile);
+    patch.url = stored.url;
+    patch.fileId = stored.fileId;
+    patch.fileName = stored.fileName;
+    patch.mimeType = stored.mimeType;
+    patch.sizeBytes = stored.sizeBytes;
+  } else if (!existing || str_(existing.kind) !== 'file' || !str_(existing.fileId)) {
+    throw appError_('กรุณาเลือกไฟล์ที่ต้องการอัปโหลด');
+  }
+
+  // เปลี่ยนไฟล์ใหม่หรือเปลี่ยนเป็นลิงก์ ให้ย้ายไฟล์เดิมลงถังขยะ
+  if (existing && str_(existing.fileId) && (newFile || kind === 'link')) {
+    try { DriveApp.getFileById(str_(existing.fileId)).setTrashed(true); } catch (err) { /* ไฟล์อาจหายไปแล้ว */ }
+  }
+
+  if (existing) {
+    update_(SHEET.RESOURCES, existing._row, patch);
+    return resourceView_(findBy_(SHEET.RESOURCES, 'id', id), true);
+  }
+  patch.id = newId_('C');
+  patch.createdAt = nowIso_();
+  patch.createdBy = truncate_(actor, 150);
+  insert_(SHEET.RESOURCES, patch);
+  return resourceView_(patch, true);
+}
+
+/** ลบรายการ และย้ายไฟล์ลงถังขยะของ Drive (กู้คืนได้ 30 วัน) */
+function deleteResource_(id) {
+  var existing = findBy_(SHEET.RESOURCES, 'id', str_(id));
+  if (!existing) throw appError_('ไม่พบรายการนี้ อาจถูกลบไปแล้ว กรุณารีเฟรชหน้า');
+  if (str_(existing.fileId)) {
+    try { DriveApp.getFileById(str_(existing.fileId)).setTrashed(true); } catch (err) { /* ไฟล์อาจหายไปแล้ว */ }
+  }
+  remove_(SHEET.RESOURCES, existing._row);
+  return true;
+}
+
+
+/* ==========================================================================
+   13_Archive.gs
+   ========================================================================== */
+
+/**
+ * 13_Archive.gs — ย้ายคำขอที่ปิดงานไปนานแล้วไปเก็บในสเปรดชีตแยก
+ *
+ * ทุกคำสั่งในหน้าเจ้าหน้าที่อ่านชีตทั้งชีต เมื่อข้อมูลสะสมหลายปีระบบจะช้าลงเรื่อย ๆ
+ * การย้ายงานเก่าที่ปิดแล้วออกไปทำให้คิวงานและการเปิดงานเร็วเท่าเดิมตลอด
+ *
+ * งานที่ย้ายไปแล้วยังใช้ได้แบบอ่านอย่างเดียว:
+ *  - ผู้ขอเปิดลิงก์ติดตามเดิมได้ เจ้าหน้าที่เปิดดูรายละเอียดได้
+ *  - แดชบอร์ดและคลังผลงานนับรวมข้อมูลที่เก็บถาวรด้วย
+ * ไฟล์บน Drive ไม่ถูกย้าย ลิงก์ไฟล์ทั้งหมดยังเปิดได้เหมือนเดิม
+ */
+
+var ARCHIVE_SHEETS = ['Requests', 'Deliverables', 'Attachments', 'Revisions', 'Timeline', 'Replies', 'Feedback'];
+
+/** เปิดสเปรดชีตเก็บถาวร (create = สร้างใหม่ถ้ายังไม่มี) */
+function archiveBook_(create) {
+  if (_cache.archive) return _cache.archive;
+  var id = getProp_(PROP.ARCHIVE_SPREADSHEET_ID);
+  if (id) {
+    try {
+      _cache.archive = SpreadsheetApp.openById(id);
+      return _cache.archive;
+    } catch (err) {
+      if (!create) return null;
+    }
+  }
+  if (!create) return null;
+  var book = SpreadsheetApp.create(APP.NAME + ' — ข้อมูลเก็บถาวร');
+  setProp_(PROP.ARCHIVE_SPREADSHEET_ID, book.getId());
+  try {
+    var rootId = getProp_(PROP.ROOT_FOLDER_ID);
+    if (rootId) DriveApp.getFolderById(rootId).addFile(DriveApp.getFileById(book.getId()));
+  } catch (err) {
+    // ย้ายเข้าโฟลเดอร์ไม่ได้ก็ยังใช้งานได้ อยู่ใน My Drive แทน
+  }
+  _cache.archive = book;
+  return book;
+}
+
+function archiveSheet_(book, name) {
+  var sh = book.getSheetByName(name);
+  if (!sh) {
+    sh = book.insertSheet(name);
+    writeHeader_(sh, name);
+  }
+  return sh;
+}
+
+/** อ่านแถวจากชีตเก็บถาวร (คืน array ว่างถ้ายังไม่เคยย้ายข้อมูล) */
+function readArchive_(name) {
+  var book = archiveBook_(false);
+  if (!book) return [];
+  return readRows_(book.getSheetByName(name), name);
+}
+
+/** ข้อมูลครบชุดของงานที่ย้ายไปเก็บถาวรแล้ว รูปแบบเดียวกับ getRequestFull_ */
+function archivedRequestFull_(jobId) {
+  var id = str_(jobId).toUpperCase();
+  if (!id || !archiveBook_(false)) return null;
+  var req = null;
+  var reqs = readArchive_(SHEET.REQUESTS);
+  for (var i = 0; i < reqs.length; i++) {
+    if (str_(reqs[i].jobId) === id) { req = reqs[i]; break; }
+  }
+  if (!req) return null;
+  function byJob(name) {
+    return readArchive_(name).filter(function (r) { return str_(r.jobId) === id; });
+  }
+  var feedback = byJob(SHEET.FEEDBACK);
+  return {
+    request: req,
+    archived: true,
+    deliverables: byJob(SHEET.DELIVERABLES).sort(function (a, b) { return int_(a.seq) - int_(b.seq); }),
+    attachments: byJob(SHEET.ATTACHMENTS),
+    revisions: byJob(SHEET.REVISIONS).sort(function (a, b) { return int_(a.round) - int_(b.round); }),
+    timeline: sortByTime_(byJob(SHEET.TIMELINE), 'at'),
+    replies: sortByTime_(byJob(SHEET.REPLIES), 'createdAt'),
+    feedback: feedback.length ? feedback[0] : null
+  };
+}
+
+/** วันที่ปิดงาน ใช้ตัดสินว่างานเก่าพอจะย้ายหรือยัง */
+function closedAtOf_(r) {
+  return str_(r.closedAt) || str_(r.deliveredAt) || str_(r.updatedAt) || str_(r.createdAt);
+}
+
+/** ตรวจวันที่ตัดรอบ ต้องเป็นวันที่ในอดีตรูปแบบ yyyy-MM-dd */
+function archiveCutoff_(cutoff) {
+  var s = str_(cutoff);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s) || !parseDate_(s)) {
+    throw appError_('กรุณาเลือกช่วงข้อมูลที่จะย้ายไปเก็บถาวร');
+  }
+  if (daysBetween_(new Date(), s) > 0) throw appError_('วันที่ตัดรอบต้องไม่เป็นวันในอนาคต');
+  return s;
+}
+
+/** งานที่จะถูกย้าย: ส่งมอบแล้วหรือยกเลิกแล้ว และปิดงานก่อนวันที่ตัดรอบ */
+function archiveCandidates_(cutoff) {
+  var c = archiveCutoff_(cutoff);
+  return readAll_(SHEET.REQUESTS).filter(function (r) {
+    var st = str_(r.status);
+    if (st !== STATUS.DELIVERED.key && st !== STATUS.CANCELLED.key) return false;
+    return closedAtOf_(r).substring(0, 10) < c;
+  });
+}
+
+/** ดูก่อนย้ายจริง ว่าจะย้ายกี่งาน */
+function previewArchive_(cutoff) {
+  var rows = archiveCandidates_(cutoff);
+  var live = readAll_(SHEET.REQUESTS).length;
+  return {
+    cutoff: str_(cutoff),
+    count: rows.length,
+    remaining: live - rows.length,
+    sample: rows.slice(0, 8).map(function (r) {
+      return { jobId: str_(r.jobId), projectName: str_(r.projectName), closedAt: closedAtOf_(r) };
+    }),
+    archiveUrl: archiveUrl_()
+  };
+}
+
+function archiveUrl_() {
+  var id = getProp_(PROP.ARCHIVE_SPREADSHEET_ID);
+  return id ? 'https://docs.google.com/spreadsheets/d/' + id + '/edit' : '';
+}
+
+/**
+ * ย้ายข้อมูลจริง ทำภายใต้ lock และย้ายทีละชีตแบบเขียนทั้งก้อน (เร็วกว่าลบทีละแถวมาก)
+ * คัดลอกไปสเปรดชีตเก็บถาวรก่อน แล้วจึงลบออกจากชีตหลัก ข้อมูลจึงไม่หายแม้ทำไม่เสร็จกลางทาง
+ */
+function runArchive_(cutoff, actor) {
+  return withLock_(function () {
+    var candidates = archiveCandidates_(cutoff);
+    if (candidates.length === 0) {
+      return { cutoff: str_(cutoff), moved: 0, sheets: {}, archiveUrl: archiveUrl_() };
+    }
+    var ids = {};
+    for (var i = 0; i < candidates.length; i++) ids[str_(candidates[i].jobId)] = true;
+
+    var book = archiveBook_(true);
+    var summary = {};
+    for (var s = 0; s < ARCHIVE_SHEETS.length; s++) {
+      var name = ARCHIVE_SHEETS[s];
+      var cols = COLUMNS[name];
+      var jobCol = cols.indexOf('jobId');
+      var sh = sheet_(name);
+      var last = sh.getLastRow();
+      if (last < 2) { summary[name] = 0; continue; }
+      var values = sh.getRange(2, 1, last - 1, cols.length).getValues();
+      var move = [];
+      var keep = [];
+      for (var r = 0; r < values.length; r++) {
+        (ids[str_(values[r][jobCol])] ? move : keep).push(values[r].map(sheetValue_));
+      }
+      summary[name] = move.length;
+      if (move.length === 0) continue;
+
+      var target = archiveSheet_(book, name);
+      var startRow = target.getLastRow() + 1;
+      // Sheets ไม่ยอมเขียนเกินจำนวนแถวที่มี (ชีตใหม่มี 1,000 แถว) จึงต้องเพิ่มแถวก่อนเมื่อย้ายข้อมูลจำนวนมาก
+      var shortBy = startRow + move.length - 1 - target.getMaxRows();
+      if (shortBy > 0) target.insertRowsAfter(target.getMaxRows(), shortBy);
+      target.getRange(startRow, 1, move.length, cols.length).setValues(move);
+
+      if (keep.length > 0) sh.getRange(2, 1, keep.length, cols.length).setValues(keep);
+      deleteDataRows_(sh, 2 + keep.length, values.length - keep.length, cols.length);
+    }
+
+    logTimeline_('SYSTEM', actor, 'ARCHIVE', '', '',
+      'ย้ายคำขอที่ปิดงานก่อน ' + formatThaiDate_(cutoff) + ' จำนวน ' + candidates.length +
+      ' รายการไปเก็บถาวร');
+    return { cutoff: str_(cutoff), moved: candidates.length, sheets: summary, archiveUrl: archiveUrl_() };
+  }, 60000);
+}
+
+/** ข้อมูลสรุปของที่เก็บถาวรสำหรับหน้าตั้งค่า */
+function archiveInfo_() {
+  return { archiveUrl: archiveUrl_(), archivedCount: readArchive_(SHEET.REQUESTS).length };
 }
 

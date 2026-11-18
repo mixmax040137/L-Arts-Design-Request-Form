@@ -2439,6 +2439,585 @@ group('23. แก้บั๊กรอบตรวจทั้งระบบ');
 }
 
 /* ==========================================================================
+   24. ข้อจำกัดของ Google Sheets เรื่องการลบแถว
+   ========================================================================== */
+group('24. ลบแถวในชีตที่ยาวเกิน 1,000 แถวได้');
+
+{
+  test('ล้างข้อมูลทั้งหมดได้แม้ชีตมีข้อมูลเกิน 1,000 แถว', () => {
+    const app = bootstrapApp();
+    const sh = app.ctx.sheet_('Timeline');
+    for (let i = 0; i < 1200; i++) app.ctx.logTimeline_('DR-2569-0001', 'ทดสอบ', 'NOTE', '', '', 'แถวที่ ' + i);
+    assert(sh.getMaxRows() >= 1200, 'ชีตต้องขยายตามข้อมูล');
+    const n = app.ctx.clearSheetRows_('Timeline');
+    assertEqual(n, 1200);
+    assertEqual(app.ctx.readAll_('Timeline').length, 0);
+  });
+
+  test('ลบแถวเดียวที่เป็นแถวข้อมูลสุดท้ายของชีตได้', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload());
+    const sh = app.ctx.sheet_('Deliverables');
+    sh._maxRows = sh._data.length; // จำลองชีตที่ไม่มีแถวว่างเหลือ
+    app.ctx.removeWhere_('Deliverables', 'jobId', job.jobId);
+    assertEqual(app.ctx.filterBy_('Deliverables', 'jobId', job.jobId).length, 0);
+  });
+}
+
+/* ==========================================================================
+   25. เจ้าหน้าที่แก้ไขข้อมูลคำขอ
+   ========================================================================== */
+group('25. เจ้าหน้าที่แก้ไขข้อมูลคำขอ');
+
+{
+  const loginAdmin = (app) => app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token;
+  function jobFor(app, overrides) {
+    const job = app.ctx.createRequest_(samplePayload(overrides));
+    app.ctx.finalizeRequest_(job.jobId);
+    app.ctx.generateBrief_(job.jobId, false);
+    return job.jobId;
+  }
+
+  test('เลื่อนกำหนดใช้งานแล้วบันทึกประวัติว่าเปลี่ยนจากวันไหนเป็นวันไหน', () => {
+    const app = bootstrapApp();
+    const id = jobFor(app);
+    const res = app.ctx.editRequest_(id, { dueDate: dateStr(40) }, 'ผู้ดูแลระบบ');
+    assertEqual(res.changes.length, 1);
+    assertEqual(app.ctx.str_(app.ctx.getRequest_(id).dueDate).substring(0, 10), dateStr(40));
+    const log = app.ctx.getTimeline_(id).filter((t) => t.action === 'EDIT')[0];
+    assert(log && log.detail.indexOf('กำหนดใช้งาน จาก') >= 0, 'ต้องบอกค่าเดิมและค่าใหม่');
+    assertEqual(log.actor, 'ผู้ดูแลระบบ');
+  });
+
+  test('แก้ได้แม้กำหนดใช้งานเดิมผ่านไปแล้ว และไม่บังคับเหตุผลงานด่วน', () => {
+    const app = bootstrapApp();
+    const id = jobFor(app);
+    const row = app.ctx.getRequest_(id);
+    app.ctx.update_('Requests', row._row, { dueDate: dateStr(-5) });
+    const res = app.ctx.editRequest_(id, { projectName: 'ชื่อโครงการที่แก้แล้ว' }, 'ผู้ดูแลระบบ');
+    assertEqual(res.changes[0].field, 'projectName');
+    app.ctx.editRequest_(id, { dueDate: dateStr(1), rushReason: '' }, 'ผู้ดูแลระบบ');
+  });
+
+  test('ข้อมูลผิดรูปแบบถูกปฏิเสธเหมือนแบบฟอร์ม และไม่มีอะไรถูกบันทึก', () => {
+    const app = bootstrapApp();
+    const id = jobFor(app);
+    assertThrows(() => app.ctx.editRequest_(id, { requesterEmail: 'ไม่ใช่อีเมล', projectName: 'ชื่อใหม่' }, 'x'), 'อีเมล');
+    assertEqual(app.ctx.getRequest_(id).projectName, 'โครงการอบรมการเขียนบทความวิชาการ');
+  });
+
+  test('ไม่มีอะไรเปลี่ยนก็ไม่บันทึกประวัติ', () => {
+    const app = bootstrapApp();
+    const id = jobFor(app);
+    const res = app.ctx.editRequest_(id, { projectName: 'โครงการอบรมการเขียนบทความวิชาการ' }, 'x');
+    assertEqual(res.changes.length, 0);
+    assertEqual(app.ctx.getTimeline_(id).filter((t) => t.action === 'EDIT').length, 0);
+  });
+
+  test('แก้รายการชิ้นงานได้ และสั่งสรุป Design Brief ใหม่ให้ตรงข้อมูลล่าสุด', () => {
+    const app = bootstrapApp();
+    const id = jobFor(app);
+    assertEqual(app.ctx.getRequest_(id).briefStatus, 'DONE');
+    app.ctx.editRequest_(id, { deliverables: [
+      { mediaType: 'vinyl', size: '2 x 3 เมตร', quantity: 1, note: 'ติดหน้าอาคาร' },
+      { mediaType: 'other', mediaOther: 'สติกเกอร์', size: '5 x 5 ซม.', quantity: 200 }
+    ] }, 'ผู้ดูแลระบบ');
+    const items = app.ctx.filterBy_('Deliverables', 'jobId', id);
+    assertEqual(items.length, 2);
+    assertEqual(items[1].mediaLabel, 'สติกเกอร์');
+    assertEqual(app.ctx.getRequest_(id).briefStatus, 'PENDING', 'ต้องรอสรุปใหม่');
+  });
+
+  test('แก้เฉพาะเบอร์โทรไม่ต้องสรุป Design Brief ใหม่', () => {
+    const app = bootstrapApp();
+    const id = jobFor(app);
+    app.ctx.editRequest_(id, { requesterPhone: '0899999999' }, 'x');
+    assertEqual(app.ctx.getRequest_(id).briefStatus, 'DONE');
+    assertEqual(app.ctx.str_(app.ctx.getRequest_(id).requesterPhone), '0899999999');
+  });
+
+  test('เลื่อนกำหนดใช้งานแล้วความเร่งด่วนที่บันทึกไว้ปรับตาม', () => {
+    const app = bootstrapApp();
+    const id = jobFor(app, { dueDate: dateStr(30) });
+    app.ctx.editRequest_(id, { dueDate: dateStr(2), rushReason: 'เลื่อนงานเร็วขึ้น' }, 'x');
+    assertEqual(app.ctx.getRequest_(id).priority, 'URGENT');
+  });
+
+  test('เลือกแจ้งผู้ขอทางอีเมลได้', () => {
+    const app = bootstrapApp();
+    const id = jobFor(app);
+    const before = app.state.outbox.length;
+    const res = app.ctx.editRequest_(id, { dueDate: dateStr(25) }, 'x', { notify: true });
+    assertEqual(res.notified, true);
+    const mail = app.state.outbox[app.state.outbox.length - 1];
+    assertEqual(app.state.outbox.length, before + 1);
+    assert(/ปรับปรุงข้อมูลคำขอ/.test(mail.subject));
+  });
+
+  test('แก้ผ่านหน้าเว็บต้องเข้าสู่ระบบ และได้ข้อมูลงานล่าสุดกลับมา', () => {
+    const app = bootstrapApp();
+    const id = jobFor(app);
+    assertEqual(app.ctx.apiAdminEditRequest('', id, { projectName: 'x' }).code, 'AUTH');
+    const res = app.ctx.apiAdminEditRequest(loginAdmin(app), id, { projectName: 'ชื่อใหม่ผ่านเว็บ' }, {});
+    assertEqual(res.ok, true);
+    assertEqual(res.data.job.request.projectName, 'ชื่อใหม่ผ่านเว็บ');
+    assertEqual(res.data.job.edit.projectName, 'ชื่อใหม่ผ่านเว็บ', 'ต้องมีข้อมูลตั้งต้นสำหรับฟอร์มแก้ไข');
+  });
+
+  test('ประวัติการแก้ไขเป็นข้อมูลภายใน ไม่แสดงในหน้าติดตามของผู้ขอ', () => {
+    const app = bootstrapApp();
+    const id = jobFor(app);
+    app.ctx.editRequest_(id, { notes: 'โน้ตใหม่' }, 'x');
+    const view = app.ctx.getPublicView_(id, 'thitiwut@arts.tu.ac.th', '');
+    assert(!view.timeline.some((t) => t.action === 'EDIT'));
+  });
+}
+
+/* ==========================================================================
+   26. ผู้ขอตอบ "รอข้อมูลเพิ่มเติม" ผ่านระบบ
+   ========================================================================== */
+group('26. ผู้ขอตอบข้อมูลเพิ่มเติมผ่านระบบ');
+
+{
+  const email = 'thitiwut@arts.tu.ac.th';
+  const b64 = (t) => loadApp().ctx.Utilities.base64Encode(t);
+  function askInfo(app, from) {
+    const job = app.ctx.createRequest_(samplePayload());
+    app.ctx.finalizeRequest_(job.jobId);
+    if (from && from !== 'NEW') app.ctx.changeStatus_(job.jobId, from, 'เจ้าหน้าที่', { notify: false });
+    app.ctx.changeStatus_(job.jobId, 'INFO_NEEDED', 'เจ้าหน้าที่', { detail: 'ขอไฟล์โลโก้เวกเตอร์', notify: false });
+    return job;
+  }
+
+  test('หน้าติดตามแสดงคำถามของเจ้าหน้าที่และเปิดให้ตอบ', () => {
+    const app = bootstrapApp();
+    const job = askInfo(app);
+    const view = app.ctx.getPublicView_(job.jobId, email, '');
+    assertEqual(view.canReply, true);
+    assertEqual(view.infoRequest.question, 'ขอไฟล์โลโก้เวกเตอร์');
+  });
+
+  test('ตอบพร้อมแนบไฟล์แล้วงานกลับไปสถานะเดิม และแจ้งเจ้าหน้าที่', () => {
+    const app = bootstrapApp();
+    const job = askInfo(app, 'DESIGNING');
+    app.ctx.uploadInfoFile_(job.jobId, '', job.trackToken, { fileName: 'logo.ai', mimeType: 'application/pdf', dataB64: b64('ai') });
+    const res = app.ctx.submitInfoReply_(job.jobId, '', job.trackToken, 'แนบโลโก้ให้แล้วครับ');
+    assertEqual(res.status, 'DESIGNING', 'ต้องกลับไปสถานะก่อนขอข้อมูล');
+    assertEqual(res.fileCount, 1);
+    const reply = app.ctx.filterBy_('Replies', 'jobId', job.jobId)[0];
+    assertEqual(reply.answer, 'แนบโลโก้ให้แล้วครับ');
+    assertEqual(reply.question, 'ขอไฟล์โลโก้เวกเตอร์');
+    const mail = app.state.outbox[app.state.outbox.length - 1];
+    assert(/ส่งข้อมูลเพิ่มเติมแล้ว/.test(mail.subject), 'ต้องแจ้งเจ้าหน้าที่');
+    assert(mail.htmlBody.indexOf('logo') >= 0, 'อีเมลต้องบอกชื่อไฟล์');
+  });
+
+  test('ถ้าไม่ทราบสถานะเดิม งานกลับไปที่รับคำขอ', () => {
+    const app = bootstrapApp();
+    const job = askInfo(app);
+    assertEqual(app.ctx.submitInfoReply_(job.jobId, email, '', 'ข้อมูลครบแล้ว').status, 'NEW');
+  });
+
+  test('ตอบได้เฉพาะตอนรอข้อมูลเพิ่มเติม และต้องมีข้อความหรือไฟล์', () => {
+    const app = bootstrapApp();
+    const job = askInfo(app);
+    assertThrows(() => app.ctx.submitInfoReply_(job.jobId, email, '', ' '), 'แนบไฟล์');
+    app.ctx.submitInfoReply_(job.jobId, email, '', 'ส่งข้อมูลแล้ว');
+    assertThrows(() => app.ctx.submitInfoReply_(job.jobId, email, '', 'ส่งซ้ำ'), 'ไม่ได้อยู่ในสถานะรอข้อมูล');
+    assertThrows(() => app.ctx.uploadInfoFile_(job.jobId, email, '',
+      { fileName: 'a.pdf', mimeType: 'application/pdf', dataB64: b64('x') }), 'เฉพาะตอนที่เจ้าหน้าที่ขอข้อมูล');
+  });
+
+  test('คนอื่นที่ไม่มีลิงก์หรืออีเมลที่ถูกต้องตอบแทนไม่ได้', () => {
+    const app = bootstrapApp();
+    const job = askInfo(app);
+    assertThrows(() => app.ctx.submitInfoReply_(job.jobId, 'someone@else.com', '', 'แอบตอบ'), 'ไม่มีสิทธิ์');
+    assertThrows(() => app.ctx.submitInfoReply_(job.jobId, '', 'token-ปลอม', 'แอบตอบ'), 'ไม่มีสิทธิ์');
+  });
+
+  test('แนบไฟล์ได้ไม่เกินจำนวนที่กำหนดต่อการตอบหนึ่งครั้ง แม้ตอนยื่นแนบไฟล์ไปเต็มแล้ว', () => {
+    const app = bootstrapApp();
+    app.ctx.setSetting_('maxFiles', '2');
+    const job = app.ctx.createRequest_(samplePayload());
+    for (let i = 0; i < 2; i++) {
+      app.ctx.uploadAttachment_(job.jobId, { fileName: 'src' + i + '.pdf', mimeType: 'application/pdf', dataB64: b64('s') }, 'source', email);
+    }
+    app.ctx.finalizeRequest_(job.jobId);
+    app.ctx.changeStatus_(job.jobId, 'INFO_NEEDED', 'x', { detail: 'ขอเพิ่ม', notify: false });
+    const up = (n) => app.ctx.uploadInfoFile_(job.jobId, email, '', { fileName: n, mimeType: 'application/pdf', dataB64: b64(n) });
+    up('a.pdf'); up('b.pdf');
+    assertThrows(() => up('c.pdf'), 'สูงสุด 2 ไฟล์');
+  });
+
+  test('เจ้าหน้าที่เห็นคำตอบในหน้ารายละเอียดงาน', () => {
+    const app = bootstrapApp();
+    const job = askInfo(app);
+    app.ctx.submitInfoReply_(job.jobId, email, '', 'คำตอบของผู้ขอ');
+    const token = app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token;
+    const view = app.ctx.apiAdminGet(token, job.jobId).data;
+    assertEqual(view.replies.length, 1);
+    assertEqual(view.replies[0].answer, 'คำตอบของผู้ขอ');
+    assertEqual(view.replies[0].returnedToLabel, 'รับคำขอ');
+  });
+
+  test('อีเมลขอข้อมูลเพิ่มเติมมีปุ่มให้ตอบผ่านระบบ', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload());
+    app.ctx.finalizeRequest_(job.jobId);
+    app.ctx.changeStatus_(job.jobId, 'INFO_NEEDED', 'x', { detail: 'ขอวันจัดงาน' });
+    const mail = app.state.outbox[app.state.outbox.length - 1];
+    assert(mail.htmlBody.indexOf('ตอบและแนบไฟล์') >= 0);
+    assert(mail.htmlBody.indexOf('page=track') >= 0);
+  });
+
+  test('ผ่าน API ได้ทั้งการแนบไฟล์และการตอบ', () => {
+    const app = bootstrapApp();
+    const job = askInfo(app);
+    assertEqual(app.ctx.apiInfoUpload(job.jobId, email, '', { fileName: 'x.pdf', mimeType: 'application/pdf', dataB64: b64('x') }).ok, true);
+    const res = app.ctx.apiInfoReply(job.jobId, email, '', 'ส่งแล้ว');
+    assertEqual(res.ok, true);
+    assertEqual(res.data.fileCount, 1);
+  });
+}
+
+/* ==========================================================================
+   27. กำหนดส่งร่างแรกตามเงื่อนไขบริการ
+   ========================================================================== */
+group('27. กำหนดส่งร่างแรก (SLA)');
+
+{
+  test('บวกวันทำการข้ามเสาร์อาทิตย์', () => {
+    const app = loadApp();
+    // ศุกร์ 6 พ.ย. 2569 + 1 วันทำการ = จันทร์ 9 พ.ย.
+    const d = app.ctx.addBusinessDays_('2026-11-06', 1);
+    assertEqual(app.ctx.Utilities.formatDate(d, 'Asia/Bangkok', 'yyyy-MM-dd'), '2026-11-09');
+    const d5 = app.ctx.addBusinessDays_('2026-11-06', 5);
+    assertEqual(app.ctx.Utilities.formatDate(d5, 'Asia/Bangkok', 'yyyy-MM-dd'), '2026-11-13');
+  });
+
+  test('คิวงานบอกกำหนดส่งร่างแรก และหายไปเมื่อส่งร่างแล้ว', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload());
+    app.ctx.finalizeRequest_(job.jobId);
+    const row = app.ctx.listRequests_({})[0];
+    assert(!!row.draftDue, 'ต้องมีกำหนดส่งร่างแรก');
+    assert(row.draftDaysLeft >= 5, 'ยังเหลืออย่างน้อย 5 วันปฏิทิน');
+    assertEqual(row.draftOverdue, false);
+    app.ctx.changeStatus_(job.jobId, 'REVIEW', 'x', { draftUrl: 'https://canva.com/a', notify: false });
+    assertEqual(app.ctx.listRequests_({})[0].draftDue, '', 'ส่งร่างแล้วไม่ต้องแสดง');
+  });
+
+  test('เกินกำหนดส่งร่างแรกถูกแจ้งในคิวงานและอีเมลสรุปประจำวัน', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload());
+    app.ctx.finalizeRequest_(job.jobId);
+    const row = app.ctx.getRequest_(job.jobId);
+    app.ctx.update_('Requests', row._row, { submittedAt: dateStr(-20) + ' 09:00:00' });
+    assertEqual(app.ctx.listRequests_({})[0].draftOverdue, true);
+    app.ctx.dailyReminder();
+    const mail = app.state.outbox[app.state.outbox.length - 1];
+    assert(mail.htmlBody.indexOf('เกินกำหนดส่งร่างแรก') >= 0, 'อีเมลสรุปต้องมีหัวข้อร่างแรกเกินกำหนด');
+  });
+
+  test('ระหว่างรอข้อมูลเพิ่มเติมไม่นับ และเริ่มนับใหม่เมื่อผู้ขอตอบ', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload());
+    app.ctx.finalizeRequest_(job.jobId);
+    const row = app.ctx.getRequest_(job.jobId);
+    app.ctx.update_('Requests', row._row, { submittedAt: dateStr(-20) + ' 09:00:00' });
+    app.ctx.changeStatus_(job.jobId, 'INFO_NEEDED', 'x', { detail: 'ขอข้อมูล', notify: false });
+    assertEqual(app.ctx.listRequests_({})[0].draftDue, '', 'รอข้อมูลอยู่ไม่ต้องนับ');
+    app.ctx.submitInfoReply_(job.jobId, 'thitiwut@arts.tu.ac.th', '', 'ส่งข้อมูลแล้ว');
+    const after = app.ctx.listRequests_({})[0];
+    assertEqual(after.draftOverdue, false, 'นับใหม่จากวันที่ข้อมูลครบ');
+    assert(after.draftDaysLeft >= 5);
+  });
+}
+
+/* ==========================================================================
+   28. ประเมินความพึงพอใจหลังส่งมอบ
+   ========================================================================== */
+group('28. ประเมินความพึงพอใจ');
+
+{
+  const email = 'thitiwut@arts.tu.ac.th';
+  function delivered(app, overrides) {
+    const job = app.ctx.createRequest_(samplePayload(overrides));
+    app.ctx.finalizeRequest_(job.jobId);
+    app.ctx.changeStatus_(job.jobId, 'DELIVERED', 'x', { notify: false });
+    return job;
+  }
+
+  test('ประเมินได้หลังส่งมอบเท่านั้น และต้องให้คะแนน 1-5', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload());
+    assertThrows(() => app.ctx.submitFeedback_(job.jobId, email, '', 5, ''), 'หลังจากส่งมอบ');
+    app.ctx.changeStatus_(job.jobId, 'DELIVERED', 'x', { notify: false });
+    assertThrows(() => app.ctx.submitFeedback_(job.jobId, email, '', 0, ''), '1 ถึง 5');
+    assertThrows(() => app.ctx.submitFeedback_(job.jobId, email, '', 6, ''), '1 ถึง 5');
+    assertEqual(app.ctx.submitFeedback_(job.jobId, email, '', 5, 'ดีมาก').rating, 5);
+  });
+
+  test('ประเมินซ้ำเป็นการแก้คะแนนเดิม ไม่เพิ่มแถวใหม่', () => {
+    const app = bootstrapApp();
+    const job = delivered(app);
+    app.ctx.submitFeedback_(job.jobId, email, '', 3, '');
+    const res = app.ctx.submitFeedback_(job.jobId, email, '', 4, 'แก้คะแนน');
+    assertEqual(res.updated, true);
+    const rows = app.ctx.filterBy_('Feedback', 'jobId', job.jobId);
+    assertEqual(rows.length, 1);
+    assertEqual(Number(rows[0].rating), 4);
+  });
+
+  test('คะแนนต่ำแจ้งเจ้าหน้าที่ทันที คะแนนดีไม่ต้องแจ้ง', () => {
+    const app = bootstrapApp();
+    const low = (m) => /คะแนนความพึงพอใจ/.test(m.subject);
+    const good = delivered(app);
+    app.ctx.submitFeedback_(good.jobId, email, '', 5, '');
+    assertEqual(app.state.outbox.filter(low).length, 0);
+    const bad = delivered(app);
+    app.ctx.submitFeedback_(bad.jobId, email, '', 2, 'ส่งช้า');
+    assertEqual(app.state.outbox.filter(low).length, 1);
+  });
+
+  test('หน้าติดตามและหน้าเจ้าหน้าที่เห็นผลประเมิน', () => {
+    const app = bootstrapApp();
+    const job = delivered(app);
+    assertEqual(app.ctx.getPublicView_(job.jobId, email, '').canRate, true);
+    app.ctx.submitFeedback_(job.jobId, email, '', 4, 'ขอบคุณครับ');
+    assertEqual(app.ctx.getPublicView_(job.jobId, email, '').feedback.rating, 4);
+    const token = app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token;
+    assertEqual(app.ctx.apiAdminGet(token, job.jobId).data.feedback.comment, 'ขอบคุณครับ');
+  });
+
+  test('แดชบอร์ดสรุปคะแนนเฉลี่ย สัดส่วนการตอบ และความเห็นล่าสุด', () => {
+    const app = bootstrapApp();
+    const a = delivered(app); const b = delivered(app); delivered(app);
+    app.ctx.submitFeedback_(a.jobId, email, '', 5, 'เยี่ยม');
+    app.ctx.submitFeedback_(b.jobId, email, '', 4, '');
+    const s = app.ctx.getStats_({}).satisfaction;
+    assertEqual(s.count, 2);
+    assertEqual(s.avg, 4.5);
+    assertEqual(s.responseRate, 67);
+    assertEqual(s.dist.join(','), '0,0,0,1,1');
+    assertEqual(s.recent.length, 1, 'แสดงเฉพาะที่มีความเห็น');
+  });
+
+  test('อีเมลส่งมอบชวนประเมินความพึงพอใจ และไฟล์ส่งออกมีคะแนน', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload());
+    app.ctx.changeStatus_(job.jobId, 'DELIVERED', 'x', {});
+    const mail = app.state.outbox[app.state.outbox.length - 1];
+    assert(mail.htmlBody.indexOf('ประเมินความพึงพอใจ') >= 0);
+    app.ctx.submitFeedback_(job.jobId, email, '', 5, '');
+    const out = app.ctx.exportRows_({});
+    assertEqual(out.rows[0][out.header.indexOf('คะแนนความพึงพอใจ')], 5);
+  });
+}
+
+/* ==========================================================================
+   29. คลังไฟล์ CI ให้ดาวน์โหลดเอง
+   ========================================================================== */
+group('29. คลังไฟล์ CI');
+
+{
+  const b64 = (t) => loadApp().ctx.Utilities.base64Encode(t);
+  const loginAdmin = (app) => app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token;
+
+  test('เพิ่มไฟล์แล้วทุกคนเห็นและดาวน์โหลดได้โดยไม่ต้องเข้าสู่ระบบ', () => {
+    const app = bootstrapApp();
+    const res = app.ctx.apiAdminSaveResource(loginAdmin(app), {
+      title: 'โลโก้คณะศิลปศาสตร์', category: 'ตราสัญลักษณ์และโลโก้', kind: 'file',
+      file: { fileName: 'logo.ai', mimeType: 'application/postscript', dataB64: b64('ai') }
+    });
+    assertEqual(res.ok, true);
+    const pub = app.ctx.apiResources().data;
+    assertEqual(pub.items.length, 1);
+    assert(pub.items[0].downloadUrl.indexOf('export=download') >= 0, 'ต้องมีลิงก์ดาวน์โหลดตรง');
+    const file = app.state.drive.files[app.ctx.findBy_('Resources', 'id', pub.items[0].id).fileId];
+    assert(!!file, 'ไฟล์ต้องอยู่บน Drive');
+  });
+
+  test('เพิ่มเป็นลิงก์ได้ สำหรับเทมเพลต Canva หรือไฟล์ใหญ่', () => {
+    const app = bootstrapApp();
+    const res = app.ctx.apiAdminSaveResource(loginAdmin(app), {
+      title: 'เทมเพลตโปสเตอร์ Canva', category: 'เทมเพลตสื่อประชาสัมพันธ์', kind: 'link',
+      url: 'https://www.canva.com/design/abc/view'
+    });
+    assertEqual(res.data.item.kind, 'link');
+    assertEqual(app.ctx.apiResources().data.items[0].downloadUrl, 'https://www.canva.com/design/abc/view');
+    assertEqual(app.ctx.apiAdminSaveResource(loginAdmin(app), { title: 'ลิงก์เสีย', kind: 'link', url: 'ftp://x' }).ok, false);
+  });
+
+  test('ซ่อนรายการแล้วผู้ขอไม่เห็น แต่เจ้าหน้าที่ยังเห็น', () => {
+    const app = bootstrapApp();
+    const token = loginAdmin(app);
+    const item = app.ctx.apiAdminSaveResource(token, { title: 'คู่มือ CI', kind: 'link', url: 'https://a.com/ci.pdf' }).data.item;
+    app.ctx.apiAdminSaveResource(token, { id: item.id, title: 'คู่มือ CI', kind: 'link', url: 'https://a.com/ci.pdf', active: false });
+    assertEqual(app.ctx.apiResources().data.items.length, 0);
+    assertEqual(app.ctx.apiAdminResources(token).data.items[0].active, false);
+  });
+
+  test('เปลี่ยนไฟล์ใหม่หรือลบรายการแล้วไฟล์เดิมลงถังขยะ', () => {
+    const app = bootstrapApp();
+    const token = loginAdmin(app);
+    const item = app.ctx.apiAdminSaveResource(token, { title: 'ฟอนต์', kind: 'file',
+      file: { fileName: 'font.ttf', mimeType: 'font/ttf', dataB64: b64('v1') } }).data.item;
+    const oldId = app.ctx.findBy_('Resources', 'id', item.id).fileId;
+    app.ctx.apiAdminSaveResource(token, { id: item.id, title: 'ฟอนต์', kind: 'file',
+      file: { fileName: 'font.ttf', mimeType: 'font/ttf', dataB64: b64('v2') } });
+    assertEqual(app.state.drive.files[oldId].trashed, true);
+    const newId = app.ctx.findBy_('Resources', 'id', item.id).fileId;
+    app.ctx.apiAdminDeleteResource(token, item.id);
+    assertEqual(app.state.drive.files[newId].trashed, true);
+    assertEqual(app.ctx.readAll_('Resources').length, 0);
+  });
+
+  test('แก้ชื่อหรือคำอธิบายโดยไม่เปลี่ยนไฟล์ได้', () => {
+    const app = bootstrapApp();
+    const token = loginAdmin(app);
+    const item = app.ctx.apiAdminSaveResource(token, { title: 'โลโก้', kind: 'file',
+      file: { fileName: 'logo.png', mimeType: 'image/png', dataB64: b64('png') } }).data.item;
+    const res = app.ctx.apiAdminSaveResource(token, { id: item.id, title: 'โลโก้ (PNG พื้นใส)', kind: 'file' });
+    assertEqual(res.ok, true);
+    assertEqual(res.data.item.title, 'โลโก้ (PNG พื้นใส)');
+    assertEqual(res.data.item.fileName, 'logo.png');
+  });
+
+  test('ต้องเข้าสู่ระบบจึงจัดการคลังไฟล์ได้ และไฟล์ชนิดอันตรายถูกปฏิเสธ', () => {
+    const app = bootstrapApp();
+    assertEqual(app.ctx.apiAdminSaveResource('', { title: 'x', kind: 'link', url: 'https://a.com' }).code, 'AUTH');
+    assertEqual(app.ctx.apiAdminDeleteResource('', 'C-1').code, 'AUTH');
+    const bad = app.ctx.apiAdminSaveResource(loginAdmin(app), { title: 'สคริปต์', kind: 'file',
+      file: { fileName: 'run.exe', mimeType: 'application/octet-stream', dataB64: b64('x') } });
+    assertEqual(bad.ok, false);
+  });
+
+  test('หน้าคลังไฟล์ CI เปิดได้จากลิงก์ตรง', () => {
+    const app = bootstrapApp();
+    app.ctx.doGet({ parameter: { page: 'resources' } });
+    assertEqual(JSON.parse(app.state.lastTemplate.boot).page, 'resources');
+  });
+}
+
+/* ==========================================================================
+   30. ย้ายข้อมูลเก่าไปเก็บถาวร
+   ========================================================================== */
+group('30. ย้ายข้อมูลเก่าไปเก็บถาวร');
+
+{
+  const email = 'thitiwut@arts.tu.ac.th';
+  const loginAdmin = (app) => app.ctx.login_('pr@arts.tu.ac.th', 'SuperSecret123').token;
+  /** สร้างงานที่ปิดไปแล้วเมื่อ daysAgo วันก่อน */
+  function closedJob(app, daysAgo, status) {
+    const job = app.ctx.createRequest_(samplePayload({ projectName: 'งานปิดเมื่อ ' + daysAgo + ' วันก่อน' }));
+    app.ctx.finalizeRequest_(job.jobId);
+    app.ctx.changeStatus_(job.jobId, status || 'DELIVERED', 'x',
+      { notify: false, cancelReason: 'ยกเลิกทดสอบ' });
+    const row = app.ctx.getRequest_(job.jobId);
+    const when = dateStr(-daysAgo) + ' 10:00:00';
+    app.ctx.update_('Requests', row._row, { closedAt: when, deliveredAt: status === 'CANCELLED' ? '' : when });
+    return job;
+  }
+
+  test('ดูก่อนย้ายได้ว่าจะย้ายกี่งาน และไม่ย้ายงานที่ยังไม่ปิด', () => {
+    const app = bootstrapApp();
+    closedJob(app, 400); closedJob(app, 380, 'CANCELLED'); closedJob(app, 10);
+    app.ctx.createRequest_(samplePayload());
+    const p = app.ctx.previewArchive_(dateStr(-365));
+    assertEqual(p.count, 2);
+    assertEqual(p.remaining, 2);
+  });
+
+  test('ย้ายแล้วข้อมูลทุกชีตของงานไปอยู่ในสเปรดชีตเก็บถาวร และหายจากคิวงาน', () => {
+    const app = bootstrapApp();
+    const old = closedJob(app, 400);
+    app.ctx.submitFeedback_(old.jobId, email, '', 5, 'เยี่ยม');
+    const keep = closedJob(app, 10);
+    const res = app.ctx.runArchive_(dateStr(-365), 'ผู้ดูแลระบบ');
+    assertEqual(res.moved, 1);
+    assert(res.sheets.Timeline > 0 && res.sheets.Deliverables > 0 && res.sheets.Feedback === 1);
+    assertEqual(app.ctx.getRequest_(old.jobId), null, 'ต้องออกจากชีตหลัก');
+    assert(!!app.ctx.getRequest_(keep.jobId), 'งานใหม่ต้องอยู่ครบ');
+    assertEqual(app.ctx.filterBy_('Timeline', 'jobId', old.jobId).length, 0);
+    assertEqual(app.ctx.readArchive_('Requests').length, 1);
+    assert(!!res.archiveUrl, 'ต้องมีลิงก์สเปรดชีตเก็บถาวร');
+  });
+
+  test('ข้อมูลที่ย้ายไม่เพี้ยน: เบอร์โทรขึ้นต้นด้วย 0 และข้อความขึ้นต้นด้วยขีดยังอยู่ครบ', () => {
+    const app = bootstrapApp();
+    const job = app.ctx.createRequest_(samplePayload({ requesterPhone: '0812345678', mandatoryText: '- บรรทัดแรก' }));
+    app.ctx.changeStatus_(job.jobId, 'DELIVERED', 'x', { notify: false });
+    const row = app.ctx.getRequest_(job.jobId);
+    app.ctx.update_('Requests', row._row, { closedAt: dateStr(-400) + ' 10:00:00' });
+    app.ctx.runArchive_(dateStr(-365), 'x');
+    const r = app.ctx.readArchive_('Requests')[0];
+    assertEqual(app.ctx.str_(r.requesterPhone), '0812345678');
+    assertEqual(r.mandatoryText, '- บรรทัดแรก');
+  });
+
+  test('ผู้ขอยังเปิดลิงก์ติดตามเดิมได้ และเจ้าหน้าที่เปิดดูแบบอ่านอย่างเดียวได้', () => {
+    const app = bootstrapApp();
+    const old = closedJob(app, 400);
+    app.ctx.runArchive_(dateStr(-365), 'x');
+    const view = app.ctx.getPublicView_(old.jobId, '', old.trackToken);
+    assert(!!view, 'ต้องเปิดได้');
+    assertEqual(view.archived, true);
+    assertEqual(view.canRate, false, 'งานที่เก็บถาวรประเมินเพิ่มไม่ได้');
+    const admin = app.ctx.apiAdminGet(loginAdmin(app), old.jobId).data;
+    assertEqual(admin.archived, true);
+    assertEqual(admin.row, null);
+    assertThrows(() => app.ctx.changeStatus_(old.jobId, 'NEW', 'x', {}), 'ไม่พบ');
+  });
+
+  test('แดชบอร์ดและคลังผลงานยังนับงานที่ย้ายไปแล้ว', () => {
+    const app = bootstrapApp();
+    const old = closedJob(app, 400);
+    app.ctx.submitFeedback_(old.jobId, email, '', 4, '');
+    closedJob(app, 10);
+    const before = app.ctx.getStats_({});
+    app.ctx.runArchive_(dateStr(-365), 'x');
+    const after = app.ctx.getStats_({});
+    assertEqual(after.totals.delivered, before.totals.delivered);
+    assertEqual(after.satisfaction.count, 1);
+    assertEqual(app.ctx.listAssetLibrary_({}).length, 2);
+  });
+
+  test('เฉพาะผู้ดูแลระบบ และต้องพิมพ์คำยืนยันให้ตรง', () => {
+    const app = bootstrapApp();
+    closedJob(app, 400);
+    const admin = loginAdmin(app);
+    app.ctx.saveUser_(admin, { email: 'staff@arts.tu.ac.th', name: 'เจ้าหน้าที่', role: 'staff', password: 'Password123' });
+    const staff = app.ctx.login_('staff@arts.tu.ac.th', 'Password123').token;
+    assertEqual(app.ctx.apiAdminArchiveRun(staff, dateStr(-365), 'ย้ายข้อมูล').code, 'FORBIDDEN');
+    assertEqual(app.ctx.apiAdminArchiveRun(admin, dateStr(-365), 'ย้าย').ok, false);
+    assertEqual(app.ctx.apiAdminArchivePreview(admin, 'ไม่ใช่วันที่').ok, false);
+    assertEqual(app.ctx.apiAdminArchivePreview(admin, dateStr(5)).ok, false, 'วันในอนาคตไม่ได้');
+    assertEqual(app.ctx.apiAdminArchiveRun(admin, dateStr(-365), 'ย้ายข้อมูล').data.moved, 1);
+  });
+
+  test('ย้ายข้อมูลจำนวนมากเกิน 1,000 แถวได้ (สเปรดชีตเก็บถาวรขยายแถวให้เอง)', () => {
+    const app = bootstrapApp();
+    const old = closedJob(app, 400);
+    for (let i = 0; i < 1100; i++) app.ctx.logTimeline_(old.jobId, 'x', 'NOTE', '', '', 'บันทึก ' + i);
+    const res = app.ctx.runArchive_(dateStr(-365), 'x');
+    assert(res.sheets.Timeline > 1100, 'ต้องย้ายประวัติครบ ได้ ' + res.sheets.Timeline);
+    assertEqual(app.ctx.readArchive_('Timeline').length, res.sheets.Timeline);
+    assertEqual(app.ctx.filterBy_('Timeline', 'jobId', old.jobId).length, 0);
+  });
+
+  test('ย้ายซ้ำได้หลายรอบ ข้อมูลต่อท้ายในสเปรดชีตเดิม', () => {
+    const app = bootstrapApp();
+    closedJob(app, 800);
+    app.ctx.runArchive_(dateStr(-700), 'x');
+    closedJob(app, 400);
+    app.ctx.runArchive_(dateStr(-365), 'x');
+    assertEqual(app.ctx.readArchive_('Requests').length, 2);
+    assertEqual(app.ctx.runArchive_(dateStr(-365), 'x').moved, 0, 'ไม่มีอะไรให้ย้ายแล้ว');
+  });
+}
+
+/* ==========================================================================
    สรุปผล
    ========================================================================== */
 console.log('\n' + '='.repeat(62));

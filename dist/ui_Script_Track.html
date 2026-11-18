@@ -49,7 +49,7 @@ var Track = (function () {
       var icon = view.status === 'CANCELLED' ? 'bi-x-circle-fill' : 'bi-exclamation-triangle-fill';
       var note = view.status === 'CANCELLED'
         ? (view.cancelReason ? 'เหตุผล: ' + view.cancelReason : '')
-        : 'เจ้าหน้าที่ขอข้อมูลเพิ่มเติม กรุณาตรวจสอบอีเมลของท่านและตอบกลับ';
+        : 'เจ้าหน้าที่ขอข้อมูลเพิ่มเติม กรุณาตอบในกล่องด้านล่าง เมื่อส่งแล้วงานจะกลับเข้าคิวทันที';
       return '<div class="p-3 p-md-4 mb-3" style="background:#fff5f5;border:1px solid #fecaca;border-radius:16px">' +
         '<div class="d-flex gap-3 align-items-start">' +
         '<i class="bi ' + icon + '" style="font-size:1.6rem;color:' + color + '"></i>' +
@@ -209,14 +209,215 @@ var Track = (function () {
             deliverables + '</ul>' +
         '</div>' +
       '</div>' +
-      actionBox + filesBox + revisionsBox + timelineBox;
+      actionBox + infoBox(view) + filesBox + feedbackBox(view) + revisionsBox + timelineBox;
+    if (view.archived) {
+      document.getElementById('track-result').insertAdjacentHTML('afterbegin',
+        '<div class="archived-banner mb-3"><i class="bi bi-archive me-1"></i>' +
+        'คำขอนี้ปิดงานไปนานแล้วและถูกย้ายไปเก็บถาวร ดูข้อมูลและดาวน์โหลดไฟล์ได้ตามปกติ</div>');
+    }
+    if (view.canReply) setupReplyFiles();
+  }
+
+  /* --------------------------------------------- ตอบข้อมูลเพิ่มเติม */
+
+  var replyFiles = [];
+
+  function infoBox(view) {
+    if (!view.canReply) return '';
+    var q = view.infoRequest || {};
+    return '<div class="info-box mb-3" id="reply-box">' +
+      '<div class="fw-semibold mb-2" style="color:var(--danger)"><i class="bi bi-chat-left-dots me-2"></i>' +
+        'เจ้าหน้าที่ขอข้อมูลเพิ่มเติม</div>' +
+      (q.question ? '<div class="mb-3" style="font-size:.9rem;background:#fff;border-radius:12px;padding:.75rem .9rem">' +
+        App.nl2br(q.question) + '</div>' : '') +
+      '<label class="form-label" for="reply-text">คำตอบของท่าน</label>' +
+      '<textarea class="form-control mb-2" id="reply-text" rows="4" maxlength="3000" ' +
+        'placeholder="พิมพ์ข้อมูลที่เจ้าหน้าที่ขอ ตอบให้ครบทุกข้อในครั้งเดียว"></textarea>' +
+      '<input type="file" id="reply-files" class="d-none" multiple onchange="Track.pickReplyFiles(this.files)">' +
+      '<div class="d-flex flex-wrap gap-2 align-items-center mb-2">' +
+        '<button type="button" class="btn btn-sm btn-ghost" onclick="document.getElementById(\'reply-files\').click()">' +
+          '<i class="bi bi-paperclip me-1"></i>แนบไฟล์</button>' +
+        '<span class="row-sub">แนบได้สูงสุด ' + view.replyMaxFiles + ' ไฟล์</span></div>' +
+      '<div id="reply-file-list" class="mb-3"></div>' +
+      '<button type="button" class="btn btn-brand btn-sm" id="reply-send" onclick="Track.sendReply()">' +
+        '<i class="bi bi-send"></i>ส่งข้อมูลให้เจ้าหน้าที่</button>' +
+    '</div>';
+  }
+
+  function setupReplyFiles() {
+    replyFiles = [];
+    renderReplyFiles();
+  }
+
+  function pickReplyFiles(list) {
+    var cfg = App.getCfg().settings;
+    var allowed = cfg.allowedFileTypes.toLowerCase().split(',').map(function (x) { return x.trim(); });
+    var max = (current && current.replyMaxFiles) || cfg.maxFiles;
+    Array.prototype.forEach.call(list, function (file) {
+      var ext = file.name.lastIndexOf('.') >= 0 ? file.name.substring(file.name.lastIndexOf('.') + 1).toLowerCase() : '';
+      if (allowed.indexOf(ext) < 0) { App.toast('ไฟล์ "' + file.name + '" เป็นชนิดที่ไม่รองรับ', 'err'); return; }
+      if (file.size > cfg.maxFileMB * 1048576) {
+        App.toast('ไฟล์ "' + file.name + '" เกิน ' + cfg.maxFileMB + ' MB', 'err'); return;
+      }
+      if (replyFiles.length >= max) { App.toast('แนบได้สูงสุด ' + max + ' ไฟล์', 'err'); return; }
+      replyFiles.push(file);
+    });
+    document.getElementById('reply-files').value = '';
+    renderReplyFiles();
+  }
+
+  function removeReplyFile(i) {
+    replyFiles.splice(i, 1);
+    renderReplyFiles();
+  }
+
+  function renderReplyFiles() {
+    var el = document.getElementById('reply-file-list');
+    if (!el) return;
+    el.innerHTML = replyFiles.map(function (f, i) {
+      return '<div class="file-row"><i class="bi bi-file-earmark" style="color:var(--primary)"></i>' +
+        '<div class="flex-grow-1 text-truncate">' + App.esc(f.name) + '</div>' +
+        '<span class="row-sub">' + App.bytes(f.size) + '</span>' +
+        '<button type="button" class="btn btn-sm btn-link text-danger p-0" onclick="Track.removeReplyFile(' + i + ')">' +
+        '<i class="bi bi-x-lg"></i></button></div>';
+    }).join('');
+  }
+
+  function readBase64(file) {
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function (e) {
+        var r = String(e.target.result);
+        resolve(r.indexOf(',') >= 0 ? r.substring(r.indexOf(',') + 1) : r);
+      };
+      reader.onerror = function () { reject(new Error('อ่านไฟล์ "' + file.name + '" ไม่สำเร็จ')); };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  /** แนบไฟล์ทีละไฟล์ก่อน แล้วจึงส่งคำตอบ (ส่งคำตอบแล้วสถานะเปลี่ยน จะแนบเพิ่มไม่ได้) */
+  function sendReply() {
+    var text = document.getElementById('reply-text').value.trim();
+    if (text.length < 2 && replyFiles.length === 0) {
+      App.toast('กรุณาพิมพ์คำตอบ หรือแนบไฟล์อย่างน้อย 1 ไฟล์', 'err');
+      return;
+    }
+    var btn = document.getElementById('reply-send');
+    btn.disabled = true;
+    var files = replyFiles.slice();
+    var failed = [];
+    var chain = Promise.resolve();
+    files.forEach(function (f, i) {
+      chain = chain.then(function () {
+        App.loading(true, 'กำลังแนบไฟล์ ' + (i + 1) + ' จาก ' + files.length + '...');
+        return readBase64(f).then(function (data) {
+          return App.api('apiInfoUpload', [auth.jobId, auth.email, auth.token,
+            { fileName: f.name, mimeType: f.type || 'application/octet-stream', dataB64: data }]);
+        }).catch(function (err) {
+          failed.push(f.name);
+          App.toast('แนบไฟล์ "' + f.name + '" ไม่สำเร็จ: ' + err.message, 'err');
+        });
+      });
+    });
+    chain.then(function () {
+      if (failed.length === files.length && files.length > 0 && text.length < 2) {
+        throw new Error('แนบไฟล์ไม่สำเร็จ กรุณาลองใหม่อีกครั้ง');
+      }
+      App.loading(true, 'กำลังส่งข้อมูลให้เจ้าหน้าที่...');
+      return App.api('apiInfoReply', [auth.jobId, auth.email, auth.token, text]);
+    }).then(function (res) {
+      App.loading(false);
+      replyFiles = [];
+      App.toast('ส่งข้อมูลเรียบร้อย งานกลับเข้าคิวในสถานะ "' + res.statusLabel + '" แล้ว', 'ok');
+      refresh();
+    }).catch(function (err) {
+      App.loading(false);
+      btn.disabled = false;
+      App.toast(err.message, 'err');
+    });
+  }
+
+  /* --------------------------------------------- ประเมินความพึงพอใจ */
+
+  var RATING_TEXT = ['', 'ควรปรับปรุง', 'พอใช้', 'ดี', 'ดีมาก', 'ดีเยี่ยม'];
+  var pickedRating = 0;
+
+  function starsHtml(n, interactive) {
+    var out = '';
+    for (var i = 1; i <= 5; i++) {
+      out += interactive
+        ? '<button type="button" class="star' + (i <= n ? ' on' : '') + '" aria-label="' + i + ' ดาว" ' +
+          'onclick="Track.pickRating(' + i + ')"><i class="bi bi-star-fill"></i></button>'
+        : '<span class="star' + (i <= n ? ' on' : '') + '"><i class="bi bi-star-fill"></i></span>';
+    }
+    return '<span class="stars' + (interactive ? '' : ' static') + '">' + out + '</span>';
+  }
+
+  function feedbackBox(view) {
+    if (!view.canRate && !view.feedback) return '';
+    var fb = view.feedback;
+    if (fb && !view.editingFeedback) {
+      return '<div class="card-soft p-3 p-md-4 mb-3">' +
+        '<div class="fw-semibold mb-2"><i class="bi bi-emoji-smile me-2" style="color:var(--primary)"></i>' +
+          'ขอบคุณสำหรับการประเมิน</div>' +
+        '<div class="d-flex align-items-center gap-2 mb-1">' + starsHtml(fb.rating, false) +
+          '<span style="font-size:.85rem">' + App.esc(fb.ratingLabel) + '</span></div>' +
+        (fb.comment ? '<div style="font-size:.85rem;color:var(--text-light)">' + App.nl2br(fb.comment) + '</div>' : '') +
+        (view.canRate ? '<button type="button" class="btn btn-link btn-sm p-0 mt-2" onclick="Track.editRating()">' +
+          'แก้ไขผลประเมิน</button>' : '') +
+      '</div>';
+    }
+    pickedRating = fb ? fb.rating : 0;
+    return '<div class="card-soft p-3 p-md-4 mb-3" style="border-color:#fde68a;background:#fffdf5" id="rate-box">' +
+      '<div class="fw-semibold mb-1"><i class="bi bi-star me-2" style="color:#f59e0b"></i>' +
+        'ประเมินความพึงพอใจต่องานบริการ</div>' +
+      '<div style="font-size:.85rem;color:var(--text-light)" class="mb-2">ใช้เวลาไม่ถึง 1 นาที ' +
+        'ความเห็นของท่านช่วยให้เราพัฒนางานบริการได้ตรงความต้องการ</div>' +
+      '<div class="d-flex align-items-center gap-2 mb-2"><span id="rate-stars">' + starsHtml(pickedRating, true) + '</span>' +
+        '<span id="rate-label" style="font-size:.88rem;font-weight:500">' + App.esc(RATING_TEXT[pickedRating]) + '</span></div>' +
+      '<textarea class="form-control mb-2" id="rate-comment" rows="2" maxlength="1000" ' +
+        'placeholder="ข้อเสนอแนะเพิ่มเติม (ถ้ามี)">' + App.esc(fb ? fb.comment : '') + '</textarea>' +
+      '<button type="button" class="btn btn-brand btn-sm" id="rate-send" onclick="Track.sendRating()">' +
+        '<i class="bi bi-send"></i>ส่งผลประเมิน</button>' +
+    '</div>';
+  }
+
+  function pickRating(n) {
+    pickedRating = n;
+    document.getElementById('rate-stars').innerHTML = starsHtml(n, true);
+    document.getElementById('rate-label').textContent = RATING_TEXT[n];
+  }
+
+  function editRating() {
+    if (!current) return;
+    current.editingFeedback = true;
+    render(current);
+    var box = document.getElementById('rate-box');
+    if (box) box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  function sendRating() {
+    if (!pickedRating) { App.toast('กรุณาเลือกจำนวนดาว 1 ถึง 5', 'err'); return; }
+    var comment = document.getElementById('rate-comment').value.trim();
+    document.getElementById('rate-send').disabled = true;
+    App.loading(true, 'กำลังส่งผลประเมิน...');
+    App.api('apiSubmitFeedback', [auth.jobId, auth.email, auth.token, pickedRating, comment]).then(function () {
+      App.loading(false);
+      App.toast('ขอบคุณสำหรับการประเมินครับ', 'ok');
+      refresh();
+    }).catch(function (err) {
+      App.loading(false);
+      document.getElementById('rate-send').disabled = false;
+      App.toast(err.message, 'err');
+    });
   }
 
   function actionLabel(action) {
     var map = {
       CREATE: 'ยื่นคำขอเข้าสู่ระบบ', SUBMIT: 'ยืนยันการยื่นคำขอ', STATUS: 'เปลี่ยนสถานะงาน',
       REVISION: 'ขอแก้ไขร่างชิ้นงาน', APPROVE: 'อนุมัติร่างชิ้นงาน', BRIEF: 'สรุปโจทย์งานออกแบบ',
-      UPLOAD: 'อัปโหลดไฟล์', ASSIGN: 'มอบหมายผู้รับผิดชอบ'
+      UPLOAD: 'อัปโหลดไฟล์', ASSIGN: 'มอบหมายผู้รับผิดชอบ', INFO_REPLY: 'ส่งข้อมูลเพิ่มเติม',
+      INFO_FILE: 'แนบไฟล์เพิ่มเติม', FEEDBACK: 'ประเมินความพึงพอใจ'
     };
     return map[action] || action;
   }
@@ -233,7 +434,8 @@ var Track = (function () {
     var map = {
       CREATE: 'bi-file-earmark-plus', SUBMIT: 'bi-send-check', STATUS: 'bi-arrow-right-circle',
       REVISION: 'bi-pencil-square', APPROVE: 'bi-hand-thumbs-up', BRIEF: 'bi-cpu',
-      UPLOAD: 'bi-cloud-arrow-up', ASSIGN: 'bi-person-check', BRIEF_FALLBACK: 'bi-cpu'
+      UPLOAD: 'bi-cloud-arrow-up', ASSIGN: 'bi-person-check', BRIEF_FALLBACK: 'bi-cpu',
+      INFO_REPLY: 'bi-chat-left-text', INFO_FILE: 'bi-paperclip', FEEDBACK: 'bi-star'
     };
     return map[action] || 'bi-dot';
   }
@@ -291,6 +493,8 @@ var Track = (function () {
 
   return {
     search: search, openFromLink: openFromLink, refresh: refresh,
+    pickReplyFiles: pickReplyFiles, removeReplyFile: removeReplyFile, sendReply: sendReply,
+    pickRating: pickRating, editRating: editRating, sendRating: sendRating,
     requestRevision: requestRevision, approve: approve
   };
 })();

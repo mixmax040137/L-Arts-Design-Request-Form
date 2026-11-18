@@ -223,9 +223,14 @@ function sendStatusChangeEmail_(req, fromStatus, toStatus, detail) {
       extra = '<div style="font-weight:600;margin-bottom:4px;">ไฟล์ฉบับสมบูรณ์</div>' +
         '<ul style="padding-left:20px;margin:4px 0 14px 0;font-size:13px;">' + lis + '</ul>';
     }
+    extra += emailNotice_('<strong>ช่วยประเมินความพึงพอใจ (ใช้เวลาไม่ถึง 1 นาที)</strong><br>' +
+      'ความเห็นของท่านช่วยให้ฝ่ายสื่อสารองค์กรพัฒนางานบริการได้ตรงความต้องการมากขึ้น');
+    ctaLabel = 'ดาวน์โหลดไฟล์และประเมินความพึงพอใจ';
   } else if (toStatus === STATUS.INFO_NEEDED.key) {
-    intro = 'เจ้าหน้าที่ขอข้อมูลเพิ่มเติมเพื่อให้สามารถเริ่มออกแบบได้ กรุณาตอบกลับอีเมลฉบับนี้';
-    extra = emailNotice_('<strong>ข้อมูลที่ยังขาด</strong><br>' + nl2br_(detail), '#dc2626');
+    intro = 'เจ้าหน้าที่ขอข้อมูลเพิ่มเติมเพื่อให้ดำเนินงานต่อได้ กรุณากดปุ่มด้านล่างเพื่อตอบและแนบไฟล์ผ่านระบบ ' +
+      'เมื่อส่งแล้วงานของท่านจะกลับเข้าคิวทันที';
+    extra = emailNotice_('<strong>ข้อมูลที่ต้องการเพิ่มเติม</strong><br>' + nl2br_(detail), '#dc2626');
+    ctaLabel = 'ตอบและแนบไฟล์';
   } else if (toStatus === STATUS.CANCELLED.key) {
     intro = 'คำขอของท่านถูกยกเลิก';
     extra = emailNotice_('<strong>เหตุผล</strong><br>' + nl2br_(req.cancelReason || detail), '#64748b');
@@ -254,7 +259,65 @@ function sendStatusChangeEmail_(req, fromStatus, toStatus, detail) {
     emailShell_('สถานะงานเปลี่ยนเป็น "' + info.label + '"', req.projectName, body, ctaLabel, ctaUrl));
 }
 
+/** แจ้งผู้ขอเมื่อเจ้าหน้าที่ปรับข้อมูลคำขอ (เมื่อเจ้าหน้าที่เลือกให้แจ้ง) */
+function sendRequestEditedEmail_(req, changes) {
+  var trackUrl = buildTrackUrl_(req);
+  var items = changes.map(function (c) {
+    return '<li style="margin-bottom:4px;">' + escapeHtml_(c.text) + '</li>';
+  }).join('');
+  var body =
+    '<p>เรียน คุณ' + escapeHtml_(req.requesterName) + '</p>' +
+    '<p>ฝ่ายสื่อสารองค์กรได้ปรับปรุงข้อมูลคำขอของท่านตามที่ได้ประสานงานกันไว้ ดังนี้</p>' +
+    '<ul style="padding-left:20px;margin:4px 0 14px 0;font-size:13px;line-height:1.7;">' + items + '</ul>' +
+    emailTable_([
+      ['เลขที่คำขอ', '<strong>' + escapeHtml_(req.jobId) + '</strong>'],
+      ['ชื่อโครงการ', escapeHtml_(req.projectName)],
+      ['กำหนดใช้งาน', escapeHtml_(formatThaiDate_(req.dueDate))]
+    ]) +
+    '<p style="font-size:13px;color:' + BRAND.textLight + ';">หากข้อมูลไม่ถูกต้อง กรุณาตอบกลับอีเมลฉบับนี้</p>';
+  return sendMail_(req.requesterEmail, '[' + req.jobId + '] ปรับปรุงข้อมูลคำขอ',
+    emailShell_('ปรับปรุงข้อมูลคำขอ', req.projectName, body, trackUrl ? 'ดูรายละเอียดงาน' : '', trackUrl));
+}
+
 /* --------------------------------------------------- อีเมลถึงเจ้าหน้าที่ */
+
+/** แจ้งเจ้าหน้าที่เมื่อผู้ขอส่งข้อมูลเพิ่มเติมผ่านระบบ */
+function sendInfoReplyToStaffEmail_(req, reply) {
+  var to = staffRecipients_();
+  if (to.length === 0) return false;
+  var adminUrl = adminJobUrl_(req.jobId);
+  var body =
+    '<p>ผู้ขอรับบริการส่งข้อมูลเพิ่มเติมแล้ว งานกลับเข้าคิวในสถานะ "' + escapeHtml_(reply.statusLabel) + '"</p>' +
+    emailTable_([
+      ['เลขที่คำขอ', '<strong>' + escapeHtml_(req.jobId) + '</strong>'],
+      ['ชื่อโครงการ', escapeHtml_(req.projectName)],
+      ['ผู้ส่ง', escapeHtml_(req.requesterName)],
+      ['ไฟล์แนบเพิ่ม', int_(reply.fileCount) + ' ไฟล์' +
+        (reply.fileNames && reply.fileNames.length ? ' (' + escapeHtml_(reply.fileNames.join(', ')) + ')' : '')]
+    ]) +
+    (reply.question ? emailNotice_('<strong>สิ่งที่ขอไป</strong><br>' + nl2br_(reply.question), '#64748b') : '') +
+    (reply.answer ? emailNotice_('<strong>คำตอบจากผู้ขอ</strong><br>' + nl2br_(reply.answer)) : '');
+  return sendMail_(to, '[' + req.jobId + '] ผู้ขอส่งข้อมูลเพิ่มเติมแล้ว',
+    emailShell_('ได้รับข้อมูลเพิ่มเติม', req.projectName, body, adminUrl ? 'เปิดคำขอนี้' : '', adminUrl));
+}
+
+/** แจ้งเจ้าหน้าที่ทันทีเมื่อได้คะแนนความพึงพอใจต่ำ เพื่อให้ติดต่อกลับ */
+function sendLowRatingEmail_(req, rating, comment) {
+  var to = staffRecipients_();
+  if (to.length === 0) return false;
+  var adminUrl = adminJobUrl_(req.jobId);
+  var body =
+    '<p>ผู้ขอรับบริการให้คะแนนความพึงพอใจต่ำ ควรติดต่อกลับเพื่อสอบถามและแก้ไข</p>' +
+    emailTable_([
+      ['เลขที่คำขอ', '<strong>' + escapeHtml_(req.jobId) + '</strong>'],
+      ['ชื่อโครงการ', escapeHtml_(req.projectName)],
+      ['ผู้ประเมิน', escapeHtml_(req.requesterName) + ' (' + escapeHtml_(req.requesterEmail) + ')'],
+      ['คะแนน', '<strong style="color:#dc2626;">' + int_(rating) + ' / 5</strong>']
+    ]) +
+    (comment ? emailNotice_('<strong>ความเห็น</strong><br>' + nl2br_(comment), '#dc2626') : '');
+  return sendMail_(to, '[' + req.jobId + '] คะแนนความพึงพอใจ ' + int_(rating) + '/5',
+    emailShell_('ผลประเมินที่ควรติดตาม', req.projectName, body, adminUrl ? 'เปิดคำขอนี้' : '', adminUrl));
+}
 
 /** แจ้งเจ้าหน้าที่เมื่อมีคำขอใหม่ */
 function sendStaffNewRequestEmail_(req) {
@@ -337,13 +400,20 @@ function dailyReminder() {
   var overdue = [];
   var dueSoon = [];
   var waiting = [];
+  var draftLate = [];
+  var draftSoon = [];
+  var replies = lastReplyMap_();
   for (var i = 0; i < rows.length; i++) {
     var left = daysBetween_(today, rows[i].dueDate);
     if (left !== null && left < 0) overdue.push(rows[i]);
     else if (left !== null && left <= 3) dueSoon.push(rows[i]);
-    if (str_(rows[i].status) === STATUS.NEW.key) waiting.push(rows[i]);
+    if (str_(rows[i].status) === STATUS.NEW.key && str_(rows[i].submittedAt)) waiting.push(rows[i]);
+    var sla = firstDraftSla_(rows[i], replies[str_(rows[i].jobId)]);
+    if (sla && sla.overdue) draftLate.push(rows[i]);
+    else if (sla && sla.daysLeft <= 1) draftSoon.push(rows[i]);
   }
-  if (overdue.length === 0 && dueSoon.length === 0 && waiting.length === 0) return;
+  if (overdue.length === 0 && dueSoon.length === 0 && waiting.length === 0 &&
+    draftLate.length === 0 && draftSoon.length === 0) return;
 
   function listHtml(items, note) {
     if (items.length === 0) return '';
@@ -362,6 +432,8 @@ function dailyReminder() {
     '<p>สรุปคิวงานออกแบบประจำวันที่ ' + escapeHtml_(formatThaiDate_(today)) + '</p>' +
     listHtml(overdue, 'เกินกำหนดส่ง (' + overdue.length + ' งาน)') +
     listHtml(dueSoon, 'ครบกำหนดภายใน 3 วัน (' + dueSoon.length + ' งาน)') +
+    listHtml(draftLate, 'เกินกำหนดส่งร่างแรกตามเงื่อนไขบริการ (' + draftLate.length + ' งาน)') +
+    listHtml(draftSoon, 'ต้องส่งร่างแรกภายในวันนี้หรือพรุ่งนี้ (' + draftSoon.length + ' งาน)') +
     listHtml(waiting, 'รอเริ่มดำเนินการ (' + waiting.length + ' งาน)');
 
   sendMail_(to, 'สรุปคิวงานออกแบบประจำวัน ' + formatThaiDate_(today),

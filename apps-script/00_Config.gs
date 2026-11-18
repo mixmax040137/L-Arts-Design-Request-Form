@@ -27,7 +27,9 @@ var PROP = {
   SETUP_AT: 'SETUP_AT',
   SETUP_KEY: 'SETUP_KEY',
   OWNER_EMAIL: 'OWNER_EMAIL',
-  WEBAPP_URL: 'WEBAPP_URL'
+  WEBAPP_URL: 'WEBAPP_URL',
+  RESOURCE_FOLDER_ID: 'RESOURCE_FOLDER_ID',
+  ARCHIVE_SPREADSHEET_ID: 'ARCHIVE_SPREADSHEET_ID'
 };
 
 /** ชื่อชีตทั้งหมด */
@@ -39,8 +41,25 @@ var SHEET = {
   TIMELINE: 'Timeline',
   USERS: 'Users',
   SETTINGS: 'Settings',
-  COUNTERS: 'Counters'
+  COUNTERS: 'Counters',
+  REPLIES: 'Replies',       // ผู้ขอตอบ "รอข้อมูลเพิ่มเติม" ผ่านระบบ
+  FEEDBACK: 'Feedback',     // แบบประเมินความพึงพอใจหลังส่งมอบ
+  RESOURCES: 'Resources'    // คลังไฟล์ CI ให้ดาวน์โหลดเอง
 };
+
+/** ชีตที่เก็บข้อมูลของคำขอแต่ละใบ (ใช้ตอนลบคำขอ ล้างข้อมูล และย้ายข้อมูลเก่าไปเก็บถาวร) */
+var JOB_SHEETS = ['Deliverables', 'Attachments', 'Revisions', 'Timeline', 'Replies', 'Feedback'];
+
+/** หมวดของไฟล์ในคลังไฟล์ CI */
+var RESOURCE_CATEGORIES = [
+  'ตราสัญลักษณ์และโลโก้',
+  'เทมเพลตสื่อประชาสัมพันธ์',
+  'เทมเพลตสไลด์และเอกสาร',
+  'ฟอนต์และชุดสี',
+  'คู่มืออัตลักษณ์องค์กร (CI)',
+  'ภาพถ่ายคณะ',
+  'อื่น ๆ'
+];
 
 /**
  * สถานะงาน 5 ระดับหลัก + สถานะยกเว้น 2 สถานะ
@@ -182,7 +201,11 @@ var COLUMNS = {
   Timeline:   ['id', 'jobId', 'at', 'actor', 'action', 'fromStatus', 'toStatus', 'detail'],
   Users:      ['email', 'name', 'role', 'passwordHash', 'salt', 'active', 'createdAt', 'lastLoginAt'],
   Settings:   ['key', 'value', 'updatedAt'],
-  Counters:   ['name', 'value']
+  Counters:   ['name', 'value'],
+  Replies:    ['id', 'jobId', 'createdAt', 'byName', 'byEmail', 'question', 'answer', 'fileCount', 'returnedTo'],
+  Feedback:   ['id', 'jobId', 'createdAt', 'updatedAt', 'rating', 'comment', 'byEmail'],
+  Resources:  ['id', 'title', 'description', 'category', 'kind', 'url', 'fileId', 'fileName', 'mimeType',
+    'sizeBytes', 'active', 'sortOrder', 'createdAt', 'createdBy', 'updatedAt']
 };
 
 /** สีหลักของระบบ (ใช้ทั้งใน UI และอีเมล) */

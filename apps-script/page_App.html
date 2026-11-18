@@ -95,6 +95,17 @@
       </div>
     </div>
 
+    <div class="ci-strip mb-5" role="button" onclick="App.go('resources')">
+      <div class="ci-strip-icon"><i class="bi bi-palette"></i></div>
+      <div class="flex-grow-1">
+        <div class="fw-semibold">คลังไฟล์ CI ดาวน์โหลดได้เอง</div>
+        <div style="font-size:.85rem;color:var(--text-light)">
+          โลโก้ เทมเพลตโปสเตอร์ เทมเพลตสไลด์ และคู่มืออัตลักษณ์คณะ งานเล็ก ๆ ทำเองได้ทันทีโดยไม่ต้องรอคิว
+        </div>
+      </div>
+      <i class="bi bi-arrow-right" style="color:var(--primary)"></i>
+    </div>
+
     <div class="card-soft p-4 p-md-5" id="guide-box">
       <h5 class="mb-4"><i class="bi bi-diagram-3 me-2" style="color:var(--primary)"></i>ขั้นตอนการให้บริการ</h5>
       <div class="row g-3" id="flow-steps"></div>
@@ -144,6 +155,8 @@
               </div>
               แบบฟอร์มนี้เป็นช่องทางรับคำขอออกแบบเพียงช่องทางเดียวของฝ่ายสื่อสารองค์กร
               การกรอกข้อมูลให้ครบถ้วนตั้งแต่ต้นจะช่วยให้เริ่มงานได้เร็วขึ้นและลดการติดต่อกลับหลายรอบ
+              <div class="mt-2">ต้องการแค่โลโก้หรือเทมเพลตคณะ?
+                <a href="#" onclick="App.go('resources');return false">ดาวน์โหลดจากคลังไฟล์ CI</a> ได้ทันที</div>
             </div>
             <div id="f-remembered" class="notice-soft mb-3 d-none">
               <i class="bi bi-person-check me-1"></i>เติมข้อมูลผู้ประสานงานจากคำขอครั้งก่อนให้แล้ว
@@ -344,6 +357,24 @@
   </section>
 
   <!-- ================================================ ตั้งค่าระบบครั้งแรก -->
+  <section id="view-resources" class="view">
+    <div class="d-flex flex-wrap justify-content-between align-items-end gap-2 mb-3">
+      <div>
+        <h3 class="mb-1" style="font-weight:600"><i class="bi bi-palette me-2" style="color:var(--primary)"></i>คลังไฟล์ CI</h3>
+        <div style="font-size:.88rem;color:var(--text-light)">
+          ไฟล์อัตลักษณ์องค์กรของคณะศิลปศาสตร์ ดาวน์โหลดไปใช้ได้ทันที หากต้องการให้ออกแบบชิ้นงานใหม่
+          <a href="#" onclick="App.go('form');return false">ยื่นคำขอออกแบบ</a>
+        </div>
+      </div>
+      <div class="position-relative" style="min-width:240px">
+        <i class="bi bi-search search-ico"></i>
+        <input type="search" class="form-control form-control-sm ps-search" id="r-search"
+          placeholder="ค้นหาไฟล์" oninput="Library.render()">
+      </div>
+    </div>
+    <div id="resources-list"></div>
+  </section>
+
   <section id="view-setup" class="view">
     <div class="card-soft overflow-hidden mx-auto" style="max-width:560px">
       <div style="background:linear-gradient(135deg,#e65c00 0%,#fbbf24 100%);color:#fff;padding:2rem;text-align:center">
@@ -436,8 +467,10 @@
       <h3 class="mb-0" id="admin-title">คิวงานออกแบบ</h3>
       <div class="tab-pills" id="admin-tabs">
         <div class="tab-pill on" data-tab="queue"><i class="bi bi-list-task me-1"></i>คิวงาน</div>
+        <div class="tab-pill" data-tab="calendar"><i class="bi bi-calendar3 me-1"></i>ปฏิทิน</div>
         <div class="tab-pill" data-tab="dashboard"><i class="bi bi-graph-up me-1"></i>แดชบอร์ด</div>
         <div class="tab-pill" data-tab="assets"><i class="bi bi-collection me-1"></i>คลังผลงาน</div>
+        <div class="tab-pill" data-tab="library"><i class="bi bi-palette me-1"></i>ไฟล์ CI</div>
         <div class="tab-pill" data-tab="settings"><i class="bi bi-gear me-1"></i>ตั้งค่า</div>
       </div>
     </div>
@@ -503,8 +536,10 @@
       </div>
     </div>
 
+    <div id="admin-calendar" class="admin-tab d-none"></div>
     <div id="admin-dashboard" class="admin-tab d-none"></div>
     <div id="admin-assets" class="admin-tab d-none"></div>
+    <div id="admin-library" class="admin-tab d-none"></div>
     <div id="admin-settings" class="admin-tab d-none"></div>
   </section>
 </div>

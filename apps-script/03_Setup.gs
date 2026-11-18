@@ -41,7 +41,8 @@ function setupSystem() {
 
   // 3) สร้างชีตทั้งหมดพร้อมหัวตาราง
   var names = [SHEET.REQUESTS, SHEET.DELIVERABLES, SHEET.ATTACHMENTS, SHEET.REVISIONS,
-    SHEET.TIMELINE, SHEET.USERS, SHEET.SETTINGS, SHEET.COUNTERS];
+    SHEET.TIMELINE, SHEET.USERS, SHEET.SETTINGS, SHEET.COUNTERS,
+    SHEET.REPLIES, SHEET.FEEDBACK, SHEET.RESOURCES];
   for (var i = 0; i < names.length; i++) {
     ensureSheet_(book, names[i]);
   }

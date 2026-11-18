@@ -8,8 +8,11 @@
  * ตรวจสอบและทำความสะอาดข้อมูลจากแบบฟอร์ม
  * คืน object ที่พร้อมบันทึก หรือโยน error พร้อมข้อความภาษาไทย
  */
-function validateRequestPayload_(payload) {
+function validateRequestPayload_(payload, options) {
   var p = payload || {};
+  // staffEdit: เจ้าหน้าที่แก้ไขคำขอเดิม ยอมให้กำหนดใช้งานเป็นวันที่ผ่านมาแล้ว
+  // ไม่บังคับเหตุผลงานด่วนและการยอมรับเงื่อนไข และพิมพ์ชื่อหน่วยงานเองได้
+  var staffEdit = !!(options && options.staffEdit);
   var errors = [];
   var out = {};
 
@@ -23,7 +26,7 @@ function validateRequestPayload_(payload) {
   if (!isValidPhone_(out.requesterPhone)) errors.push('กรุณากรอกเบอร์โทรศัพท์ 9-10 หลัก');
 
   var dept = truncate_(pick_(p, 'department', ''), 150);
-  if (dept === 'อื่น ๆ') {
+  if (dept === 'อื่น ๆ' && !(staffEdit && !pick_(p, 'departmentOther', ''))) {
     var other = truncate_(pick_(p, 'departmentOther', ''), 150);
     if (!other) errors.push('กรุณาระบุชื่อหน่วยงานหรือสาขาวิชา');
     dept = other || dept;
@@ -45,7 +48,7 @@ function validateRequestPayload_(payload) {
     out.dueDate = '';
   } else {
     var daysAhead = daysBetween_(new Date(), due);
-    if (daysAhead < 0) {
+    if (daysAhead < 0 && !staffEdit) {
       errors.push('วันที่ต้องการใช้งานต้องไม่เป็นวันที่ผ่านมาแล้ว');
     }
     out.dueDate = Utilities.formatDate(due, APP.TIMEZONE, 'yyyy-MM-dd');
@@ -114,14 +117,14 @@ function validateRequestPayload_(payload) {
   // งานด่วนต้องมีเหตุผล
   var minLead = getSettingInt_('minLeadDays', 7);
   out.rushReason = truncate_(pick_(p, 'rushReason', ''), 500);
-  if (due) {
+  if (due && !staffEdit) {
     var lead = daysBetween_(new Date(), due);
     if (lead >= 0 && lead < minLead && !out.rushReason) {
       errors.push('กำหนดใช้งานเหลือน้อยกว่า ' + minLead + ' วัน กรุณาระบุเหตุผลความจำเป็นเร่งด่วน');
     }
   }
 
-  if (pick_(p, 'acceptTerms', false) !== true && str_(pick_(p, 'acceptTerms', '')) !== 'true') {
+  if (!staffEdit && pick_(p, 'acceptTerms', false) !== true && str_(pick_(p, 'acceptTerms', '')) !== 'true') {
     errors.push('กรุณายอมรับเงื่อนไขการให้บริการก่อนส่งคำขอ');
   }
 
@@ -282,8 +285,215 @@ function getRequestFull_(jobId) {
     attachments: filterBy_(SHEET.ATTACHMENTS, 'jobId', req.jobId),
     revisions: filterBy_(SHEET.REVISIONS, 'jobId', req.jobId)
       .sort(function (a, b) { return int_(a.round) - int_(b.round); }),
-    timeline: getTimeline_(req.jobId)
+    timeline: getTimeline_(req.jobId),
+    replies: sortByTime_(filterBy_(SHEET.REPLIES, 'jobId', req.jobId), 'createdAt'),
+    feedback: findBy_(SHEET.FEEDBACK, 'jobId', req.jobId)
   };
+}
+
+/** เรียงจากเก่าไปใหม่ตามคอลัมน์เวลา คงลำดับเดิมเมื่อเวลาเท่ากัน */
+function sortByTime_(rows, key) {
+  return rows.slice().sort(function (a, b) {
+    var x = str_(a[key]);
+    var y = str_(b[key]);
+    return x === y ? 0 : (x < y ? -1 : 1);
+  });
+}
+
+/* ------------------------------------------- กำหนดส่งร่างแรก (SLA) */
+
+/** บวกวันทำการ (ข้ามเสาร์ อาทิตย์ ไม่นับวันหยุดนักขัตฤกษ์) */
+function addBusinessDays_(date, days) {
+  var d = startOfDay_(date);
+  if (!d) return null;
+  var added = 0;
+  var guard = 0;
+  while (added < days && guard < 400) {
+    d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
+    var w = d.getDay();
+    if (w !== 0 && w !== 6) added++;
+    guard++;
+  }
+  return d;
+}
+
+/**
+ * กำหนดส่งร่างแรกตามเงื่อนไขการให้บริการ (slaFirstDraftDays วันทำการ)
+ * เริ่มนับจากวันยื่นคำขอ หรือวันที่ผู้ขอส่งข้อมูลเพิ่มเติมครั้งล่าสุด (ข้อมูลครบเมื่อไรเริ่มนับเมื่อนั้น)
+ * ระหว่างรอข้อมูลเพิ่มเติมไม่นับ และเมื่อส่งร่างแรกแล้วจะไม่แสดงอีก
+ */
+function firstDraftSla_(r, lastReplyAt) {
+  var st = str_(r.status).toUpperCase();
+  if (str_(r.firstDraftAt)) return null;
+  if (st !== STATUS.NEW.key && st !== STATUS.DESIGNING.key) return null;
+  if (!str_(r.submittedAt)) return null;
+  var start = parseDate_(r.submittedAt);
+  var replied = parseDate_(lastReplyAt);
+  if (replied && (!start || replied > start)) start = replied;
+  var due = addBusinessDays_(start, getSettingInt_('slaFirstDraftDays', 5));
+  if (!due) return null;
+  var left = daysBetween_(new Date(), due);
+  return {
+    dueDate: Utilities.formatDate(due, APP.TIMEZONE, 'yyyy-MM-dd'),
+    daysLeft: left,
+    overdue: left < 0
+  };
+}
+
+/** เวลาที่ผู้ขอตอบข้อมูลเพิ่มเติมครั้งล่าสุดของทุกงาน (อ่านชีตครั้งเดียว) */
+function lastReplyMap_() {
+  var map = {};
+  var rows = readAll_(SHEET.REPLIES);
+  for (var i = 0; i < rows.length; i++) {
+    var id = str_(rows[i].jobId);
+    var at = str_(rows[i].createdAt);
+    if (!map[id] || at > map[id]) map[id] = at;
+  }
+  return map;
+}
+
+/* ------------------------------------------- เจ้าหน้าที่แก้ไขข้อมูลคำขอ */
+
+/** ช่องที่เจ้าหน้าที่แก้ได้ พร้อมชื่อที่แสดงในประวัติ (short = แสดงค่าเดิมและค่าใหม่) */
+var EDITABLE_FIELDS = [
+  { key: 'projectName', label: 'ชื่อโครงการ', short: true },
+  { key: 'dueDate', label: 'กำหนดใช้งาน', short: true, date: true },
+  { key: 'eventDate', label: 'วันจัดกิจกรรม', short: true, date: true },
+  { key: 'requesterName', label: 'ชื่อผู้ประสานงาน', short: true },
+  { key: 'requesterEmail', label: 'อีเมลผู้ประสานงาน', short: true },
+  { key: 'requesterPhone', label: 'โทรศัพท์', short: true },
+  { key: 'lineId', label: 'LINE ID', short: true },
+  { key: 'department', label: 'หน่วยงาน', short: true },
+  { key: 'objective', label: 'วัตถุประสงค์', brief: true },
+  { key: 'targetAudience', label: 'กลุ่มเป้าหมาย', brief: true },
+  { key: 'keyMessage', label: 'ข้อความหลัก', brief: true },
+  { key: 'mandatoryText', label: 'ข้อความบังคับบนชิ้นงาน', brief: true },
+  { key: 'referenceUrl', label: 'ตัวอย่างอ้างอิง', brief: true },
+  { key: 'channels', label: 'ช่องทางเผยแพร่', brief: true },
+  { key: 'notes', label: 'หมายเหตุ', brief: true },
+  { key: 'rushReason', label: 'เหตุผลความเร่งด่วน' }
+];
+
+/** แปลงแถวคำขอกลับเป็นรูปแบบเดียวกับข้อมูลจากแบบฟอร์ม */
+function requestToPayload_(req, deliverables) {
+  return {
+    requesterName: str_(req.requesterName),
+    requesterEmail: str_(req.requesterEmail),
+    requesterPhone: phoneOut_(req.requesterPhone),
+    lineId: str_(req.lineId),
+    department: str_(req.department),
+    projectName: str_(req.projectName),
+    eventDate: str_(req.eventDate).substring(0, 10),
+    dueDate: str_(req.dueDate).substring(0, 10),
+    objective: str_(req.objective),
+    targetAudience: str_(req.targetAudience),
+    keyMessage: str_(req.keyMessage),
+    mandatoryText: str_(req.mandatoryText),
+    referenceUrl: str_(req.referenceUrl),
+    channels: splitList_(req.channels),
+    notes: str_(req.notes),
+    rushReason: str_(req.rushReason),
+    deliverables: deliverables.map(function (d) {
+      return {
+        mediaType: str_(d.mediaType),
+        mediaOther: str_(d.mediaType) === 'other' ? str_(d.mediaLabel) : '',
+        size: str_(d.size),
+        quantity: int_(d.quantity, 1),
+        note: str_(d.note)
+      };
+    })
+  };
+}
+
+function deliverablesKey_(items) {
+  return JSON.stringify(items.map(function (d) {
+    return [str_(d.mediaType), str_(d.mediaLabel), str_(d.size), int_(d.quantity, 1), str_(d.note)];
+  }));
+}
+
+/**
+ * เจ้าหน้าที่แก้ไขข้อมูลคำขอ (เช่น เลื่อนกำหนดใช้งาน แก้ชื่อโครงการ เปลี่ยนรายการชิ้นงาน)
+ * ตรวจข้อมูลด้วยกติกาเดียวกับแบบฟอร์ม บันทึกเฉพาะช่องที่เปลี่ยน และบันทึกในประวัติว่าใครแก้อะไร
+ * options.notify = ส่งอีเมลแจ้งผู้ขอว่ามีการปรับข้อมูล
+ */
+function editRequest_(jobId, payload, actor, options) {
+  var id = str_(jobId).toUpperCase();
+  var p = payload || {};
+  var result = withLock_(function () {
+    var req = getRequest_(id);
+    if (!req) throw appError_('ไม่พบเลขที่คำขอ ' + id);
+    var oldItems = filterBy_(SHEET.DELIVERABLES, 'jobId', id)
+      .sort(function (a, b) { return int_(a.seq) - int_(b.seq); });
+    var current = requestToPayload_(req, oldItems);
+
+    var merged = {};
+    for (var k in current) if (Object.prototype.hasOwnProperty.call(current, k)) merged[k] = current[k];
+    for (var key in p) {
+      if (!Object.prototype.hasOwnProperty.call(p, key)) continue;
+      if (Object.prototype.hasOwnProperty.call(current, key) || key === 'departmentOther') merged[key] = p[key];
+    }
+    var data = validateRequestPayload_(merged, { staffEdit: true });
+
+    var patch = {};
+    var changes = [];
+    var briefChanged = false;
+    for (var i = 0; i < EDITABLE_FIELDS.length; i++) {
+      var f = EDITABLE_FIELDS[i];
+      var before = f.key === 'channels' ? joinList_(current.channels) : str_(current[f.key]);
+      var after = str_(data[f.key]);
+      if (before === after) continue;
+      patch[f.key] = after;
+      if (f.brief || f.date || f.key === 'projectName') briefChanged = true;
+      var show = function (v) { return f.date ? (v ? formatThaiDate_(v) : '(ไม่ระบุ)') : (v || '(ว่าง)'); };
+      changes.push({
+        field: f.key, label: f.label,
+        text: f.short ? f.label + ' จาก ' + truncate_(show(before), 80) + ' เป็น ' + truncate_(show(after), 80)
+          : f.label
+      });
+    }
+
+    var itemsChanged = deliverablesKey_(oldItems) !== deliverablesKey_(data.deliverables);
+    if (itemsChanged) {
+      briefChanged = true;
+      changes.push({ field: 'deliverables', label: 'รายการชิ้นงาน', text: 'รายการชิ้นงาน' });
+    }
+    if (changes.length === 0) return { jobId: id, changes: [] };
+
+    if (patch.dueDate) patch.priority = calcPriority_(patch.dueDate);
+    // ข้อมูลที่ใช้สรุปโจทย์เปลี่ยน ให้งานเบื้องหลังสรุป Design Brief ใหม่ให้ตรงกับข้อมูลล่าสุด
+    if (briefChanged && str_(req.submittedAt)) patch.briefStatus = 'PENDING';
+    patch.updatedAt = nowIso_();
+    patch.updatedBy = str_(actor);
+    update_(SHEET.REQUESTS, req._row, patch);
+
+    if (itemsChanged) {
+      removeWhere_(SHEET.DELIVERABLES, 'jobId', id);
+      for (var j = 0; j < data.deliverables.length; j++) {
+        var d = data.deliverables[j];
+        insert_(SHEET.DELIVERABLES, {
+          id: newId_('D'), jobId: id, seq: j + 1, mediaType: d.mediaType, mediaLabel: d.mediaLabel,
+          size: d.size, quantity: d.quantity, note: d.note
+        });
+      }
+    }
+
+    logTimeline_(id, actor, 'EDIT', '', '', 'แก้ไขข้อมูลคำขอ: ' +
+      changes.map(function (c) { return c.text; }).join(' / '));
+    return { jobId: id, changes: changes, briefQueued: patch.briefStatus === 'PENDING' };
+  });
+
+  if (result.briefQueued) {
+    try { scheduleWorker_(); } catch (err) { /* ทริกเกอร์ทุก 5 นาทีจะทำให้เอง */ }
+  }
+  if (options && options.notify && result.changes.length > 0) {
+    try {
+      sendRequestEditedEmail_(getRequest_(id), result.changes);
+      result.notified = true;
+    } catch (err) {
+      logTimeline_(id, 'system', 'EMAIL_ERROR', '', '', 'แจ้งผู้ขอเรื่องแก้ไขข้อมูลไม่สำเร็จ: ' + err.message);
+    }
+  }
+  return result;
 }
 
 /**
@@ -342,31 +552,36 @@ function buildTrackUrl_(req) {
  */
 function getPublicView_(jobId, email, token) {
   var id = str_(jobId).toUpperCase();
-  var req = getRequest_(id);
-  if (!req) return null;
+  var full = getRequestFull_(id);
+  var archived = false;
+  if (!full) {
+    full = archivedRequestFull_(id);
+    archived = !!full;
+  }
+  if (!full) return null;
+  var req = full.request;
 
   var authorized = false;
   if (token && verifyTrackToken_(id, token)) authorized = true;
   if (!authorized && email && str_(email).toLowerCase() === str_(req.requesterEmail).toLowerCase()) authorized = true;
   if (!authorized) return null;
 
-  var deliverables = filterBy_(SHEET.DELIVERABLES, 'jobId', id)
-    .sort(function (a, b) { return int_(a.seq) - int_(b.seq); })
-    .map(function (d) {
-      return { mediaLabel: d.mediaLabel, size: d.size, quantity: int_(d.quantity), note: str_(d.note) };
-    });
+  var live = !archived;
+  var deliverables = full.deliverables.map(function (d) {
+    return { mediaLabel: str_(d.mediaLabel), size: str_(d.size), quantity: int_(d.quantity), note: str_(d.note) };
+  });
+  var revisions = full.revisions.map(function (r) {
+    return { round: int_(r.round), createdAt: str_(r.createdAt), byName: str_(r.byName), comment: str_(r.comment) };
+  });
 
-  var revisions = filterBy_(SHEET.REVISIONS, 'jobId', id)
-    .sort(function (a, b) { return int_(a.round) - int_(b.round); })
-    .map(function (r) {
-      return { round: int_(r.round), createdAt: str_(r.createdAt), byName: str_(r.byName), comment: str_(r.comment) };
-    });
-
-  var fullTimeline = getTimeline_(id);
-  var approval = draftApproval_(fullTimeline);
-  var inReview = str_(req.status) === STATUS.REVIEW.key;
-  var timeline = fullTimeline
-    .filter(function (t) { return str_(t.action) !== 'EMAIL_ERROR' && str_(t.action) !== 'NOTE'; })
+  var approval = draftApproval_(full.timeline);
+  var st = str_(req.status);
+  var inReview = live && st === STATUS.REVIEW.key;
+  var timeline = full.timeline
+    .filter(function (t) {
+      var a = str_(t.action);
+      return a !== 'EMAIL_ERROR' && a !== 'NOTE' && a !== 'EDIT' && a !== 'ERROR';
+    })
     .map(function (t) {
       return {
         at: str_(t.at), action: str_(t.action), toStatus: str_(t.toStatus),
@@ -375,13 +590,15 @@ function getPublicView_(jobId, email, token) {
       };
     });
 
-  var files = filterBy_(SHEET.ATTACHMENTS, 'jobId', id)
+  var files = full.attachments
     .filter(function (f) { return str_(f.kind) === 'final'; })
     .map(function (f) { return { fileName: f.fileName, fileUrl: f.fileUrl, sizeBytes: int_(f.sizeBytes) }; });
 
   var info = statusInfo_(req.status);
+  var infoNeeded = live && st === STATUS.INFO_NEEDED.key;
   return {
     jobId: req.jobId,
+    archived: archived,
     status: info.key,
     statusLabel: info.label,
     statusEn: info.en,
@@ -403,6 +620,11 @@ function getPublicView_(jobId, email, token) {
     canRequestRevision: inReview && !approval.approved &&
       int_(req.revisionCount) < int_(req.revisionLimit),
     canApprove: inReview && !approval.approved,
+    infoRequest: infoNeeded ? infoQuestion_(full.timeline) : null,
+    canReply: infoNeeded,
+    replyMaxFiles: getSettingInt_('maxFiles', 8),
+    feedback: feedbackView_(full.feedback),
+    canRate: live && st === STATUS.DELIVERED.key,
     deliverables: deliverables,
     revisions: revisions,
     finalFiles: files,
@@ -706,6 +928,8 @@ function deleteRequest_(jobId, actor) {
     summary.attachments = removeWhere_(SHEET.ATTACHMENTS, 'jobId', id);
     summary.revisions = removeWhere_(SHEET.REVISIONS, 'jobId', id);
     summary.timeline = removeWhere_(SHEET.TIMELINE, 'jobId', id);
+    summary.replies = removeWhere_(SHEET.REPLIES, 'jobId', id);
+    summary.feedback = removeWhere_(SHEET.FEEDBACK, 'jobId', id);
     remove_(SHEET.REQUESTS, req._row);
 
     // เก็บร่องรอยไว้ตรวจสอบย้อนหลังว่าใครลบอะไรเมื่อไหร่
@@ -738,6 +962,8 @@ function resetAllRequests_(actor) {
       attachments: clearSheetRows_(SHEET.ATTACHMENTS),
       revisions: clearSheetRows_(SHEET.REVISIONS),
       timeline: clearSheetRows_(SHEET.TIMELINE),
+      replies: clearSheetRows_(SHEET.REPLIES),
+      feedback: clearSheetRows_(SHEET.FEEDBACK),
       counters: clearSheetRows_(SHEET.COUNTERS),
       foldersTrashed: trashed
     };
@@ -798,11 +1024,13 @@ function listRequests_(filter) {
     return ja < jb ? 1 : -1;
   });
 
-  return out.map(listRowView_);
+  var replies = lastReplyMap_();
+  return out.map(function (r) { return listRowView_(r, replies[str_(r.jobId)]); });
 }
 
 /** ข้อมูลหนึ่งแถวในคิวงานของเจ้าหน้าที่ */
-function listRowView_(r) {
+function listRowView_(r, lastReplyAt) {
+  var sla = firstDraftSla_(r, lastReplyAt);
   var info = statusInfo_(r.status);
   var pinfo = priorityInfo_(livePriority_(r));
   var due = parseDate_(r.dueDate);
@@ -824,8 +1052,12 @@ function listRowView_(r) {
     department: str_(r.department),
     projectName: str_(r.projectName),
     dueDate: str_(r.dueDate),
+    eventDate: str_(r.eventDate),
     daysLeft: daysLeft,
     overdue: daysLeft !== null && daysLeft < 0 && !closed,
+    draftDue: sla ? sla.dueDate : '',
+    draftDaysLeft: sla ? sla.daysLeft : null,
+    draftOverdue: !!(sla && sla.overdue),
     assignedTo: str_(r.assignedTo),
     revisionCount: int_(r.revisionCount),
     revisionLimit: int_(r.revisionLimit),

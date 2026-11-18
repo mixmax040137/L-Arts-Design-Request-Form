@@ -35,8 +35,15 @@ function sheet_(name) {
   var book = ss_();
   var sh = book.getSheetByName(name);
   if (!sh) {
-    sh = book.insertSheet(name);
-    writeHeader_(sh, name);
+    // ชีตใหม่ (เช่น ชีตที่เพิ่มในเวอร์ชันหลัง) สร้างให้เองเมื่อใช้ครั้งแรก
+    // ถ้ามีคนเปิดพร้อมกันแล้วอีกคนสร้างไปก่อน ให้ใช้ชีตที่สร้างแล้วแทน
+    try {
+      sh = book.insertSheet(name);
+      writeHeader_(sh, name);
+    } catch (err) {
+      sh = book.getSheetByName(name);
+      if (!sh) throw err;
+    }
   }
   _cache.sheets[name] = sh;
   return sh;
@@ -55,7 +62,12 @@ function writeHeader_(sh, name) {
 
 /** อ่านทุกแถวของชีตเป็น array ของ object */
 function readAll_(name) {
-  var sh = sheet_(name);
+  return readRows_(sheet_(name), name);
+}
+
+/** อ่านทุกแถวจากชีตที่ระบุ (ใช้ได้กับสเปรดชีตเก็บถาวรด้วย) โดยใช้โครงสร้างคอลัมน์ของชีตชื่อ name */
+function readRows_(sh, name) {
+  if (!sh) return [];
   var lastRow = sh.getLastRow();
   var cols = COLUMNS[name];
   if (lastRow < 2) return [];
@@ -158,8 +170,7 @@ function update_(name, rowIndex, patch) {
 
 /** ลบแถว */
 function remove_(name, rowIndex) {
-  var sh = sheet_(name);
-  sh.deleteRow(rowIndex);
+  deleteDataRows_(sheet_(name), rowIndex, 1, COLUMNS[name].length);
 }
 
 /**
@@ -180,7 +191,7 @@ function removeWhere_(name, key, value) {
   for (var i = 0; i < values.length; i++) {
     if (str_(values[i][0]) === target) rows.push(i + 2);
   }
-  for (var r = rows.length - 1; r >= 0; r--) sh.deleteRow(rows[r]);
+  for (var r = rows.length - 1; r >= 0; r--) deleteDataRows_(sh, rows[r], 1, cols.length);
   return rows.length;
 }
 
@@ -189,8 +200,20 @@ function clearSheetRows_(name) {
   var sh = sheet_(name);
   var lastRow = sh.getLastRow();
   if (lastRow < 2) return 0;
-  sh.deleteRows(2, lastRow - 1);
+  deleteDataRows_(sh, 2, lastRow - 1, COLUMNS[name].length);
   return lastRow - 1;
+}
+
+/**
+ * ลบแถวข้อมูลช่วงหนึ่ง
+ * Google Sheets ไม่ยอมให้ลบแถวที่ไม่ได้ตรึงไว้จนหมดทุกแถว (เกิดได้เมื่อชีตยาวเกิน 1,000 แถว
+ * เพราะ appendRow เพิ่มแถวพอดีกับข้อมูล) จึงล้างค่าก่อนแล้วเว้นแถวสุดท้ายไว้หนึ่งแถว
+ */
+function deleteDataRows_(sh, start, count, width) {
+  if (count <= 0) return;
+  sh.getRange(start, 1, count, width).clearContent();
+  var deletable = Math.min(count, sh.getMaxRows() - start);
+  if (deletable > 0) sh.deleteRows(start, deletable);
 }
 
 /**
