@@ -22,8 +22,11 @@ function validateRequestPayload_(payload, options) {
   out.requesterEmail = truncate_(str_(pick_(p, 'requesterEmail', '')).toLowerCase(), 254);
   if (!isValidEmail_(out.requesterEmail)) errors.push('รูปแบบอีเมลไม่ถูกต้อง');
 
+  // เบอร์โทรไม่บังคับ แต่ถ้ากรอกต้องถูกรูปแบบ เจ้าหน้าที่จะได้โทรกลับได้จริง
   out.requesterPhone = normalizePhone_(pick_(p, 'requesterPhone', ''));
-  if (!isValidPhone_(out.requesterPhone)) errors.push('กรุณากรอกเบอร์โทรศัพท์ 9-10 หลัก');
+  if (out.requesterPhone && !isValidPhone_(out.requesterPhone)) {
+    errors.push('เบอร์โทรศัพท์ต้องมี 9-10 หลัก หรือเว้นว่างไว้ถ้าไม่ต้องการให้ติดต่อทางโทรศัพท์');
+  }
 
   var dept = truncate_(pick_(p, 'department', ''), 150);
   if (dept === 'อื่น ๆ' && !(staffEdit && !pick_(p, 'departmentOther', ''))) {

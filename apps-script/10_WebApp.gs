@@ -103,6 +103,7 @@ function bootstrapData_() {
     needsFirstAdmin: readAll_(SHEET.USERS).length === 0,
     mediaTypes: MEDIA_TYPES,
     departments: DEPARTMENTS,
+    departmentGroups: DEPARTMENT_GROUPS,
     channels: CHANNELS,
     statusFlow: STATUS_FLOW.map(function (k) {
       return { key: k, label: STATUS[k].label, en: STATUS[k].en, step: STATUS[k].step };

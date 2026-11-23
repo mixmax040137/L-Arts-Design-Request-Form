@@ -469,7 +469,7 @@ var Admin = (function () {
               '<div><a href="mailto:' + App.esc(r.requesterEmail) + '">' +
               App.esc(r.requesterEmail) + '</a></div></div>' +
             '<div class="col-6"><div class="detail-label">โทรศัพท์</div>' +
-              '<div>' + App.esc(r.requesterPhone) +
+              '<div>' + (r.requesterPhone ? App.esc(r.requesterPhone) : '-') +
               (r.lineId ? ' &middot; LINE: ' + App.esc(r.lineId) : '') + '</div></div>' +
             '<div class="col-6"><div class="detail-label">ยื่นคำขอ</div>' +
               '<div>' + App.thaiDate(r.createdAt, true) + '</div></div>' +
@@ -674,7 +674,7 @@ var Admin = (function () {
         edField('ed-requesterName', 'ชื่อ-นามสกุล', e.requesterName, { req: true }) +
         edField('ed-department', 'หน่วยงาน', e.department, { list: 'ed-dept-list', req: true }) +
         edField('ed-requesterEmail', 'อีเมล', e.requesterEmail, { type: 'email', req: true }) +
-        edField('ed-requesterPhone', 'โทรศัพท์', e.requesterPhone, { type: 'tel', req: true }) +
+        edField('ed-requesterPhone', 'โทรศัพท์', e.requesterPhone, { type: 'tel' }) +
         edField('ed-lineId', 'LINE ID', e.lineId) +
         '<div class="col-12 set-group mt-2">รายละเอียดงาน</div>' +
         edField('ed-objective', 'วัตถุประสงค์', e.objective, { type: 'textarea', col: 'col-12', req: true }) +

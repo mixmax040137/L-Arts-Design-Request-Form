@@ -223,6 +223,22 @@ group('2. การตรวจสอบข้อมูลแบบฟอร์�
     assertThrows(() => V(samplePayload({ requesterEmail: 'not-an-email' })), 'อีเมล');
   });
 
+  test('ไม่กรอกเบอร์โทรได้ (ไม่บังคับ)', () => {
+    assertEqual(V(samplePayload({ requesterPhone: '' })).requesterPhone, '');
+    assertEqual(V(samplePayload({ requesterPhone: '  ' })).requesterPhone, '');
+  });
+
+  test('รายชื่อหน่วยงานครบตามเว็บไซต์คณะ แบ่งกลุ่ม และไม่ซ้ำกัน', () => {
+    const groups = app.ctx.DEPARTMENT_GROUPS;
+    const all = app.ctx.DEPARTMENTS;
+    assertEqual(groups[0].items.length, 15, 'สาขาวิชาปริญญาตรีหลักสูตรปกติต้องมี 15 สาขา');
+    ['สาขาวิชาสเปนและลาตินอเมริกันศึกษา', 'สาขาวิชาภูมิศาสตร์และภูมิสารสนเทศ', 'สาขาวิชาการแปลและล่ามในยุคดิจิทัล',
+      'สาขาวิชาพุทธศาสนศึกษา', 'ศูนย์การแปลราชนครินทร์', 'งานบัณฑิตศึกษา'].forEach((d) =>
+      assert(all.indexOf(d) >= 0, 'ขาด ' + d));
+    assertEqual(new Set(all).size, all.length, 'ห้ามมีชื่อซ้ำ');
+    assertEqual(all[all.length - 1], 'อื่น ๆ', '"อื่น ๆ" ต้องอยู่ท้ายสุด');
+  });
+
   test('ปฏิเสธเบอร์โทรที่สั้นเกินไป', () => {
     assertThrows(() => V(samplePayload({ requesterPhone: '123' })), 'เบอร์โทรศัพท์');
   });
