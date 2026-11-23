@@ -144,6 +144,7 @@ function createRequest_(payload) {
   var data = validateRequestPayload_(payload);
   // ผู้ออกแบบที่ผู้ขอเลือก (ไม่เลือก = ให้ฝ่ายฯ จัดสรรให้) ตรวจก่อนออกเลขที่ เพื่อไม่ให้เลขที่ถูกใช้ไปเปล่า ๆ
   var designer = requesterDesigner_(pick_(payload, 'designerId', ''));
+  var pooled = !designer && str_(pick_(payload, 'designerId', '')) === DESIGNER_POOL;
 
   return withLock_(function () {
     var jobId = newJobId_();
@@ -214,6 +215,8 @@ function createRequest_(payload) {
     logTimeline_(jobId, data.requesterName, 'CREATE', '', STATUS.NEW.key, 'ผู้ขอรับบริการยื่นคำขอผ่านแบบฟอร์มออนไลน์');
     if (designer) {
       logTimeline_(jobId, data.requesterName, 'ASSIGN', '', '', 'ผู้ขอเลือกผู้ออกแบบ: ' + designer.name);
+    } else if (pooled) {
+      logTimeline_(jobId, data.requesterName, 'ASSIGN', '', '', 'ผู้ขอเลือกให้ฝ่ายฯ จัดสรรผู้ออกแบบให้');
     }
 
     return {
@@ -758,10 +761,11 @@ function assignRequest_(jobId, assignee, actor) {
   update_(SHEET.REQUESTS, req._row, { assignedTo: name, updatedAt: nowIso_(), updatedBy: str_(actor) });
   logTimeline_(jobId, actor, 'ASSIGN', '', '', 'มอบหมายให้ ' + (name || '(ไม่ระบุ)'));
   var updated = getRequest_(jobId);
-  var designer = name ? findDesigner_(name) : null;
-  if (designer && designer.email && designerKey_(before) !== designerKey_(name)) {
+  // แจ้งผู้รับผิดชอบคนใหม่ทางอีเมล (ผู้ออกแบบที่ใส่อีเมลไว้ หรือบัญชีเจ้าหน้าที่ที่ชื่อตรงกัน)
+  var contact = name ? assigneeContact_(name) : null;
+  if (contact && designerKey_(before) !== designerKey_(name)) {
     try {
-      sendAssignedEmail_(updated, designer, actor);
+      sendAssignedEmail_(updated, contact, actor);
     } catch (err) {
       logTimeline_(jobId, 'system', 'EMAIL_ERROR', '', '', 'แจ้งผู้ออกแบบไม่สำเร็จ: ' + err.message);
     }

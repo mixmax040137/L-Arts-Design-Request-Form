@@ -247,10 +247,11 @@
                 </button>
               </div>
               <div class="col-12" id="f-designer-wrap">
-                <label class="form-label mb-1">ผู้ออกแบบที่ต้องการ <span class="text-secondary fw-normal">(ไม่บังคับ)</span></label>
-                <div class="form-text mt-0 mb-2">เลือกคนที่ถนัดงานแบบนี้ได้เลย ดูงานในมือของแต่ละคนได้ที่
+                <label class="form-label mb-1">ผู้ออกแบบที่ต้องการ<span class="req">*</span></label>
+                <div class="form-text mt-0 mb-2">เลือกคนที่ถนัดงานแบบนี้ หรือเลือก "ให้ฝ่ายฯ จัดสรรให้" ถ้ายังไม่แน่ใจ ดูงานในมือของแต่ละคนได้ที่
                   <a href="#workload-panel" onclick="document.getElementById('workload-panel').scrollIntoView({behavior:'smooth'});return false">คิวงานด้านล่าง</a></div>
-                <div class="designer-pick" id="f-designers" role="radiogroup" aria-label="ผู้ออกแบบที่ต้องการ"></div>
+                <div class="designer-pick" id="f-designers" role="radiogroup" aria-label="ผู้ออกแบบที่ต้องการ" aria-required="true"></div>
+                <div class="dp-err">กรุณาเลือกผู้ออกแบบ หรือเลือก "ให้ฝ่ายฯ จัดสรรให้"</div>
               </div>
               <div class="col-12">
                 <label class="form-label">ลิงก์ตัวอย่างอ้างอิง (ถ้ามี)</label>
@@ -488,12 +489,12 @@
       <div class="queue-chips mb-3" id="queue-chips"></div>
       <div class="card-soft p-3 mb-3">
         <div class="row g-2 align-items-end">
-          <div class="col-md-5">
+          <div class="col-md-3">
             <label class="form-label" for="q-search">ค้นหา</label>
             <div class="position-relative">
               <i class="bi bi-search search-ico"></i>
               <input type="search" class="form-control form-control-sm ps-search" id="q-search"
-                placeholder="เลขที่คำขอ ชื่อโครงการ ผู้ขอ หน่วยงาน เบอร์โทร" oninput="Admin.renderQueue()">
+                placeholder="เลขที่ โครงการ ผู้ขอ เบอร์โทร" oninput="Admin.renderQueue()">
             </div>
           </div>
           <div class="col-6 col-md-2">
@@ -506,13 +507,19 @@
             </select>
           </div>
           <div class="col-6 col-md-2">
+            <label class="form-label" for="q-assignee">ผู้รับผิดชอบ</label>
+            <select class="form-select form-select-sm" id="q-assignee" onchange="Admin.renderQueue()">
+              <option value="">ทุกคน</option>
+            </select>
+          </div>
+          <div class="col-12 col-md-2">
             <label class="form-label" for="q-sort">เรียงตาม</label>
             <select class="form-select form-select-sm" id="q-sort" onchange="Admin.renderQueue()">
               <option value="due">กำหนดใช้งานใกล้สุด</option>
               <option value="new">ยื่นคำขอล่าสุด</option>
             </select>
           </div>
-          <div class="col-md-3 d-flex gap-2">
+          <div class="col-12 col-md-3 d-flex gap-2">
             <button class="btn btn-sm btn-ghost flex-fill" id="q-refresh" onclick="Admin.loadQueue()"
               title="โหลดคิวงานล่าสุด"><i class="bi bi-arrow-clockwise me-1"></i>รีเฟรช</button>
             <button class="btn btn-sm btn-ghost flex-fill" onclick="Admin.exportCsv()"
@@ -530,6 +537,7 @@
                 <th>โครงการ / ผู้ขอรับบริการ</th>
                 <th>กำหนดใช้งาน</th>
                 <th>สถานะ</th>
+                <th>ผู้รับผิดชอบ</th>
                 <th>ความเร่งด่วน</th>
                 <th>แก้ไข</th>
                 <th></th>

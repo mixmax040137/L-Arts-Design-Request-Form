@@ -10,7 +10,10 @@
  * ไม่ส่งชื่อ อีเมล หรือเบอร์โทรของผู้ขอเด็ดขาด
  */
 
-var PUBLIC_WORKLOAD_CACHE_KEY = 'public:workload:v1';
+var PUBLIC_WORKLOAD_CACHE_KEY = 'public:workload:v2';
+var DESIGNER_POOL = 'pool';            // ผู้ขอเลือก "ให้ฝ่ายฯ จัดสรรให้"
+var STAFF_LABEL = 'เจ้าหน้าที่ฝ่ายฯ'; // ชื่อที่ผู้ขอเห็นเมื่องานอยู่กับคนที่ไม่อยู่ในรายชื่อผู้ออกแบบ
+var STAFF_COLOR = '#64748b';
 var DEFAULT_DESIGNER_CAPACITY = 6;
 
 /** คีย์สำหรับเทียบชื่อ ไม่สนช่องว่างซ้ำและตัวพิมพ์ใหญ่เล็ก */
@@ -75,12 +78,22 @@ function resolveAssignee_(text) {
   return d ? d.name : truncate_(str_(text).replace(/\s+/g, ' '), 150);
 }
 
-/** ผู้ออกแบบที่ผู้ขอเลือกตอนยื่นคำขอ (ว่าง = ให้ฝ่ายฯ จัดสรรให้) */
+/**
+ * ผู้ออกแบบที่ผู้ขอเลือกตอนยื่นคำขอ คืน null เมื่อเลือก "ให้ฝ่ายฯ จัดสรรให้"
+ * ผู้ขอต้องเลือกเองทุกครั้ง (ผู้ออกแบบคนใดคนหนึ่ง หรือ DESIGNER_POOL)
+ * ยกเว้นยังไม่มีรายชื่อผู้ออกแบบเลย ซึ่งหน้าเว็บจะซ่อนตัวเลือกไว้
+ */
 function requesterDesigner_(designerId) {
   var id = str_(designerId);
-  if (!id) return null;
-  var d = findDesigner_(id);
+  if (id === DESIGNER_POOL) return null;
   var e = null;
+  if (!id) {
+    if (listDesigners_(false).length === 0) return null;
+    e = appError_('กรุณาเลือกผู้ออกแบบที่ต้องการในขั้นที่ 2 หรือเลือก "ให้ฝ่ายฯ จัดสรรให้" ถ้ายังไม่แน่ใจ');
+    e.code = 'DESIGNER';
+    throw e;
+  }
+  var d = findDesigner_(id);
   if (!d || !d.active || d.id !== id) {
     e = appError_('ผู้ออกแบบที่เลือกไม่อยู่ในรายชื่อแล้ว กรุณาเลือกใหม่ หรือเลือก "ให้ฝ่ายฯ จัดสรรให้"');
   } else if (!d.accepting) {
@@ -102,8 +115,40 @@ function publicDesignerOf_(assignedTo) {
   var name = str_(assignedTo);
   if (!name) return null;
   var d = findDesigner_(name);
-  if (!d || designerKey_(d.name) !== designerKey_(name)) return null;
+  if (!d || designerKey_(d.name) !== designerKey_(name)) return { name: STAFF_LABEL, color: STAFF_COLOR, staff: true };
   return { name: d.name, color: d.color };
+}
+
+/** ชื่อบัญชีเจ้าหน้าที่ที่ใช้งานอยู่ (ไม่มีอีเมล) สำหรับเลือกผู้รับผิดชอบ */
+function activeStaffNames_() {
+  var seen = {};
+  var out = [];
+  readAll_(SHEET.USERS).forEach(function (u) {
+    if (str_(u.active).toUpperCase() !== 'TRUE') return;
+    var name = str_(u.name).replace(/\s+/g, ' ');
+    if (!name || seen[designerKey_(name)]) return;
+    seen[designerKey_(name)] = true;
+    out.push(name);
+  });
+  return out;
+}
+
+/**
+ * อีเมลของผู้รับผิดชอบ ใช้แจ้งเมื่อได้รับมอบหมายงาน
+ * ใช้อีเมลในรายชื่อผู้ออกแบบก่อน ถ้าไม่มีให้ใช้อีเมลบัญชีเจ้าหน้าที่ที่ชื่อตรงกัน
+ */
+function assigneeContact_(name) {
+  var key = designerKey_(name);
+  if (!key) return null;
+  var d = findDesigner_(name);
+  if (d && designerKey_(d.name) === key && d.email) return { name: d.name, email: d.email };
+  var users = readAll_(SHEET.USERS);
+  for (var i = 0; i < users.length; i++) {
+    if (str_(users[i].active).toUpperCase() === 'TRUE' && designerKey_(users[i].name) === key && str_(users[i].email)) {
+      return { name: str_(users[i].name), email: str_(users[i].email) };
+    }
+  }
+  return null;
 }
 
 /** งานที่กำลังดำเนินการ (ยื่นแล้ว และยังไม่ส่งมอบหรือยกเลิก) */
@@ -125,8 +170,8 @@ function loadLevel_(count, capacity) {
 }
 
 /**
- * ภาระงานของผู้ออกแบบแต่ละคน และงานที่ยังไม่มีผู้รับผิดชอบ
- * งานที่ชื่อผู้รับผิดชอบไม่ตรงกับใครในรายชื่อนับเป็น "ยังไม่ระบุ"
+ * ภาระงานของผู้ออกแบบแต่ละคน งานที่ยังไม่มีผู้รับผิดชอบ (other)
+ * และงานที่มอบหมายให้คนที่ไม่อยู่ในรายชื่อผู้ออกแบบ (staff) เช่น บัญชีเจ้าหน้าที่อื่น
  */
 function computeWorkload_(designers, rows) {
   var byKey = {};
@@ -136,17 +181,19 @@ function computeWorkload_(designers, rows) {
     return s;
   });
   var other = { active: 0, dueSoon: 0, overdue: 0 };
+  var staff = { active: 0, dueSoon: 0, overdue: 0 };
   var today = new Date();
   var jobs = rows.map(function (r) {
     var s = byKey[designerKey_(r.assignedTo)] || null;
-    var bucket = s || other;
+    var isStaff = !s && !!str_(r.assignedTo);
+    var bucket = s || (isStaff ? staff : other);
     var left = daysBetween_(today, r.dueDate);
     bucket.active++;
     if (left !== null && left < 0) bucket.overdue++;
     else if (left !== null && left <= 7) bucket.dueSoon++;
-    return { row: r, designer: s ? s.designer : null, daysLeft: left };
+    return { row: r, designer: s ? s.designer : null, staff: isStaff, daysLeft: left };
   });
-  return { stats: stats, other: other, jobs: jobs };
+  return { stats: stats, other: other, staff: staff, jobs: jobs };
 }
 
 /**
@@ -177,6 +224,7 @@ function publicWorkload_() {
       return out;
     }),
     unassigned: { active: w.other.active, dueSoon: w.other.dueSoon, color: UNASSIGNED_COLOR },
+    staff: { active: w.staff.active, dueSoon: w.staff.dueSoon, color: STAFF_COLOR, label: STAFF_LABEL },
     jobs: w.jobs.map(function (j) {
       var info = statusInfo_(j.row.status);
       return {
@@ -186,9 +234,9 @@ function publicWorkload_() {
         status: info.key,
         statusLabel: info.label,
         statusColor: info.color,
-        designerId: j.designer ? j.designer.id : '',
-        designerName: j.designer ? j.designer.name : '',
-        color: j.designer ? j.designer.color : UNASSIGNED_COLOR
+        designerId: j.designer ? j.designer.id : (j.staff ? '__staff' : ''),
+        designerName: j.designer ? j.designer.name : (j.staff ? STAFF_LABEL : ''),
+        color: j.designer ? j.designer.color : (j.staff ? STAFF_COLOR : UNASSIGNED_COLOR)
       };
     }).sort(function (a, b) {
       return a.dueDate === b.dueDate ? 0 : (a.dueDate < b.dueDate ? -1 : 1);
@@ -235,6 +283,7 @@ function adminDesigners_() {
       };
     }),
     unassigned: w.other.active,
+    staff: activeStaffNames_().filter(function (n) { return !known[designerKey_(n)]; }),
     suggestions: Object.keys(suggest).map(function (n) { return { name: n, jobs: suggest[n] }; }),
     palette: DESIGNER_COLORS
   };

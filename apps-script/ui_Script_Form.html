@@ -11,7 +11,10 @@ var Form = (function () {
   var pendingReads = 0;  // จำนวนไฟล์ที่เบราว์เซอร์ยังอ่านไม่เสร็จ
   var channels = [];
   var created = null;    // {jobId, trackToken}
-  var designerId = '';   // ผู้ออกแบบที่ผู้ขอเลือก ('' = ให้ฝ่ายฯ จัดสรรให้)
+  // ผู้ออกแบบที่ผู้ขอเลือก: null = ยังไม่ได้เลือก (ต้องเลือกก่อนไปขั้นถัดไป)
+  // POOL = "ให้ฝ่ายฯ จัดสรรให้" (ตรงกับ DESIGNER_POOL ใน 14_Designers.gs) อื่น ๆ = id ผู้ออกแบบ
+  var POOL = 'pool';
+  var designerId = null;
   var submitting = false;
 
   function init(config) {
@@ -54,8 +57,9 @@ var Form = (function () {
     var wrap = document.getElementById('f-designer-wrap');
     if (!wrap) return;
     wrap.classList.toggle('d-none', list.length === 0);
-    // คนที่เลือกไว้ถูกซ่อนหรืองดรับงานไปแล้ว ให้กลับไปเป็น "ให้ฝ่ายฯ จัดสรร"
-    if (designerId && !list.some(function (d) { return d.id === designerId && d.accepting; })) designerId = '';
+    // คนที่เลือกไว้ถูกซ่อนหรืองดรับงานไปแล้ว ให้ผู้ขอเลือกใหม่
+    if (designerId && designerId !== POOL &&
+        !list.some(function (d) { return d.id === designerId && d.accepting; })) designerId = null;
     var stats = Workload.statsById();
     function card(id, color, title, sub, extra, disabled) {
       var on = designerId === id;
@@ -66,7 +70,7 @@ var Form = (function () {
           '<i class="bi bi-check-circle-fill dp-check"></i></div>' +
         (sub ? '<div class="dp-sub">' + App.esc(sub) + '</div>' : '') + (extra || '') + '</button>';
     }
-    var html = card('', 'var(--primary)', 'ให้ฝ่ายฯ จัดสรรให้',
+    var html = card(POOL, 'var(--primary)', 'ให้ฝ่ายฯ จัดสรรให้',
       'เจ้าหน้าที่เลือกคนที่ว่างและเหมาะกับงานให้', '', false);
     html += list.map(function (d) {
       var s = stats[d.id];
@@ -81,9 +85,15 @@ var Form = (function () {
   }
 
   function pickDesigner(id) {
-    designerId = id || '';
+    designerId = id || POOL;
+    document.getElementById('f-designer-wrap').classList.remove('dp-invalid');
     renderDesigners();
-    Workload.focus(designerId || null);
+    Workload.focus(designerId === POOL ? null : designerId);
+  }
+
+  /** ต้องเลือกผู้ออกแบบ (หรือให้ฝ่ายฯ จัดสรร) เมื่อมีรายชื่อให้เลือก */
+  function designerMissing() {
+    return (cfg.designers || []).length > 0 && !designerId;
   }
 
   /** รายชื่อผู้ออกแบบเปลี่ยน (ผู้ดูแลแก้ในหน้าตั้งค่า) */
@@ -93,7 +103,7 @@ var Form = (function () {
   }
 
   function designerLabel() {
-    if (!designerId) return 'ให้ฝ่ายสื่อสารองค์กรจัดสรรให้';
+    if (!designerId || designerId === POOL) return 'ให้ฝ่ายสื่อสารองค์กรจัดสรรให้';
     var d = (cfg.designers || []).filter(function (x) { return x.id === designerId; })[0];
     return d ? d.name : 'ให้ฝ่ายสื่อสารองค์กรจัดสรรให้';
   }
@@ -474,6 +484,10 @@ var Form = (function () {
         if (!size) itemErrors++;
       }
       if (itemErrors > 0) errors.push('กรุณาเลือกประเภทสื่อและระบุขนาดให้ครบทุกรายการชิ้นงาน');
+
+      var noDesigner = designerMissing();
+      document.getElementById('f-designer-wrap').classList.toggle('dp-invalid', noDesigner);
+      if (noDesigner) errors.push('กรุณาเลือกผู้ออกแบบที่ต้องการ หรือเลือก "ให้ฝ่ายฯ จัดสรรให้" ถ้ายังไม่แน่ใจ');
     }
 
     if (n === 3) {
@@ -555,7 +569,7 @@ var Form = (function () {
       notes: document.getElementById('f-notes').value.trim(),
       channels: channels.slice(),
       acceptTerms: document.getElementById('f-accept').checked,
-      designerId: designerId,
+      designerId: designerId || '',
       deliverables: items.map(function (it) {
         return {
           mediaType: it.mediaType,
@@ -600,7 +614,8 @@ var Form = (function () {
       App.toast(err.message, 'err');
       // ผู้ออกแบบที่เลือกงดรับงานหรือถูกซ่อนไประหว่างกรอก: กลับไปเลือกใหม่พร้อมรายชื่อล่าสุด
       if (err.code === 'DESIGNER' && !created) {
-        designerId = '';
+        designerId = null;
+        document.getElementById('f-designer-wrap').classList.add('dp-invalid');
         showStep(2);
         Workload.load(true);
         setTimeout(function () {
@@ -665,7 +680,8 @@ var Form = (function () {
     pendingReads = 0;
     renderFiles();
     created = null;
-    designerId = '';
+    designerId = null;
+    document.getElementById('f-designer-wrap').classList.remove('dp-invalid');
     renderDesigners();
     Workload.focus(null);
     document.getElementById('form-done').classList.add('d-none');
@@ -781,8 +797,9 @@ var Workload = (function () {
   function cls(id) { return focusId === null ? '' : (focusId === id ? ' on' : ' dim'); }
 
   function rowsHtml() {
+    var staff = data.staff || { active: 0 };
     var maxActive = Math.max.apply(null, data.designers.map(function (d) { return d.active; })
-      .concat([data.unassigned.active, 1]));
+      .concat([data.unassigned.active, staff.active, 1]));
     var rows = data.designers.map(function (d) {
       return '<button type="button" class="wl-row' + cls(d.id) + '" style="--c:' + d.color + '" ' +
         'onclick="Workload.toggleFocus(\'' + App.esc(d.id) + '\')" title="กดเพื่อดูเฉพาะงานของ ' + App.esc(d.name) + '">' +
@@ -795,6 +812,14 @@ var Workload = (function () {
           (d.accepting ? 'ครบกำหนดใน 7 วัน ' + d.dueSoon + ' งาน' : '<span style="color:var(--danger)">งดรับงานใหม่ชั่วคราว</span>') +
         '</div></div></button>';
     });
+    if (staff.active > 0) {
+      rows.push('<button type="button" class="wl-row' + cls('__staff') + '" style="--c:' + staff.color + '" ' +
+        'onclick="Workload.toggleFocus(\'__staff\')">' +
+        '<div class="wl-name"><i class="cdot"></i><span>' + App.esc(staff.label) + '</span></div>' +
+        '<div class="wl-mid"><div class="wl-bar"><i style="width:' + Math.round(staff.active / maxActive * 100) + '%"></i></div>' +
+          '<div class="row-sub text-truncate">เจ้าหน้าที่ฝ่ายฯ ที่ไม่ได้อยู่ในรายชื่อให้เลือก</div></div>' +
+        '<div class="wl-meta"><strong>' + staff.active + '</strong> งาน</div></button>');
+    }
     if (data.unassigned.active > 0) {
       rows.push('<button type="button" class="wl-row' + cls('__none') + '" style="--c:' + data.unassigned.color + '" ' +
         'onclick="Workload.toggleFocus(\'__none\')">' +
@@ -810,6 +835,9 @@ var Workload = (function () {
       return '<button type="button" class="' + (focusId !== null && focusId !== d.id ? 'dim' : '') + '" style="--c:' + d.color + '" ' +
         'onclick="Workload.toggleFocus(\'' + App.esc(d.id) + '\')"><i class="cdot"></i>' + App.esc(d.shortName || d.name) + '</button>';
     }).join('') +
+      (data.staff && data.staff.active > 0 ? '<button type="button" class="' + (focusId !== null && focusId !== '__staff' ? 'dim' : '') +
+        '" style="--c:' + data.staff.color + '" onclick="Workload.toggleFocus(\'__staff\')"><i class="cdot"></i>' +
+        App.esc(data.staff.label) + '</button>' : '') +
       '<button type="button" class="' + (focusId !== null && focusId !== '__none' ? 'dim' : '') + '" style="--c:' +
         data.unassigned.color + '" onclick="Workload.toggleFocus(\'__none\')"><i class="cdot"></i>รอจัดสรร</button></div>';
   }
@@ -881,7 +909,7 @@ var Workload = (function () {
     el.classList.remove('d-none');
     var jobs = data.jobs.filter(matches);
     var focusName = focusId === '__none' ? 'รอจัดสรรผู้ออกแบบ'
-      : ((statsById()[focusId] || {}).name || '');
+      : (focusId === '__staff' ? ((data.staff || {}).label || '') : ((statsById()[focusId] || {}).name || ''));
     var at = String(data.generatedAt || '').substring(11, 16);
     el.innerHTML =
       '<div class="wp-head"><div><h4><i class="bi bi-kanban me-2" style="color:var(--primary)"></i>คิวงานออกแบบตอนนี้</h4>' +

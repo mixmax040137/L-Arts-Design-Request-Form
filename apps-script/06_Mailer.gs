@@ -355,7 +355,7 @@ function sendStaffNewRequestEmail_(req) {
       ['ชื่อโครงการ', escapeHtml_(req.projectName)],
       ['ผู้ขอรับบริการ', escapeHtml_(req.requesterName) + ' (' + escapeHtml_(req.department) + ')'],
       ['ผู้ออกแบบที่ผู้ขอเลือก', str_(req.assignedTo) ? '<strong>' + escapeHtml_(req.assignedTo) + '</strong>'
-        : 'ไม่ระบุ (ให้ฝ่ายฯ จัดสรร)'],
+        : 'ให้ฝ่ายฯ จัดสรรให้ <span style="color:#b45309">(กรุณามอบหมายผู้รับผิดชอบ)</span>'],
       ['ติดต่อ', escapeHtml_(req.requesterEmail) + ' / ' + escapeHtml_(phoneOut_(req.requesterPhone))],
       ['กำหนดใช้งาน', escapeHtml_(formatThaiDate_(req.dueDate))],
       ['ไฟล์แนบ', int_(req.attachmentCount) + ' ไฟล์'],

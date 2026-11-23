@@ -193,7 +193,12 @@ var Admin = (function () {
     queueLoading = true;
     if (!quiet && queueCache.length === 0) App.loading(true, 'กำลังโหลดคิวงาน...');
     setRefreshing(true);
-    App.api('apiAdminList', [token, {}]).then(function (rows) {
+    // โหลดรายชื่อผู้ออกแบบและบัญชีเจ้าหน้าที่พร้อมกัน ใช้เป็นตัวเลือกผู้รับผิดชอบในแต่ละแถว
+    Promise.all([
+      App.api('apiAdminList', [token, {}]),
+      loadDesigners(false).catch(function () { return null; })
+    ]).then(function (results) {
+      var rows = results[0];
       queueLoading = false;
       App.loading(false);
       setRefreshing(false);
@@ -217,9 +222,13 @@ var Admin = (function () {
     var q = document.getElementById('q-search').value.trim().toLowerCase();
     var priority = document.getElementById('q-priority').value;
     var sort = document.getElementById('q-sort').value;
+    var who = renderAssigneeFilter();
+    var counts = activeCounts();
 
     var searched = queueCache.filter(function (r) {
       if (priority && r.priority !== priority) return false;
+      if (who === '__none' && r.assignedTo) return false;
+      if (who && who !== '__none' && dKey(r.assignedTo) !== who) return false;
       if (!q) return true;
       return [r.jobId, r.projectName, r.requesterName, r.requesterEmail, r.department,
         r.requesterPhone, r.assignedTo].join(' ').toLowerCase().indexOf(q) >= 0;
@@ -274,8 +283,12 @@ var Admin = (function () {
         '<td class="q-status"><span class="badge-status" style="background:' + r.statusColor + '">' +
           App.esc(r.statusLabel) + '</span>' +
           (r.submitted ? '' : '<div class="row-sub"><i class="bi bi-hourglass me-1"></i>กำลังแนบไฟล์</div>') +
-          (r.assignedTo ? '<div class="row-sub d-flex align-items-center gap-1">' + assigneeHtml(r.assignedTo) + '</div>' : '') +
         '</td>' +
+        '<td class="q-who" onclick="event.stopPropagation()">' +
+          '<div class="who-sel' + (r.assignedTo ? '' : ' none') + '" style="--c:' + designerColor(r.assignedTo) + '">' +
+          '<i class="cdot"></i><select class="form-select form-select-sm" aria-label="ผู้รับผิดชอบงาน ' + App.esc(r.jobId) + '" ' +
+          'onchange="Admin.quickAssign(\'' + App.esc(r.jobId) + '\', this)">' + assigneeOptions(r.assignedTo, counts) +
+          '</select></div></td>' +
         '<td class="q-pri"><span style="color:' + r.priorityColor + ';font-size:.82rem">' +
           (r.overdue ? '<i class="bi bi-exclamation-triangle-fill me-1"></i>' : '') +
           App.esc(r.priorityLabel) + '</span></td>' +
@@ -1204,9 +1217,95 @@ var Admin = (function () {
     return null;
   }
 
+  /** สีของผู้รับผิดชอบ: สีผู้ออกแบบ / เทาเข้ม = บัญชีเจ้าหน้าที่หรือชื่ออื่น / เทาอ่อน = ยังไม่มอบหมาย */
   function designerColor(name) {
     var d = designerOf(name);
-    return d ? d.color : '#94a3b8';
+    return d ? d.color : (dKey(name) ? '#64748b' : '#cbd5e1');
+  }
+
+  /** จำนวนงานที่ยังไม่ปิดของแต่ละคน นับจากคิวงานที่โหลดไว้ (ตรงกับที่เห็นในตาราง) */
+  function activeCounts() {
+    var c = {};
+    queueCache.forEach(function (r) {
+      if (isClosed(r) || !r.submitted || !r.assignedTo) return;
+      var k = dKey(r.assignedTo);
+      c[k] = (c[k] || 0) + 1;
+    });
+    return c;
+  }
+
+  /** รายชื่อผู้รับผิดชอบที่เลือกได้: ผู้ออกแบบ แล้วตามด้วยบัญชีเจ้าหน้าที่ที่ไม่อยู่ในรายชื่อผู้ออกแบบ */
+  function assigneeNames() {
+    var designers = ((designerData && designerData.designers) || App.getCfg().designers || [])
+      .filter(function (d) { return d.active !== false; });
+    return {
+      designers: designers,
+      staff: (designerData && designerData.staff) || []
+    };
+  }
+
+  function assigneeOptions(current, counts) {
+    var cur = dKey(current);
+    var found = !cur;
+    var names = assigneeNames();
+    function opt(name, note) {
+      var sel = dKey(name) === cur;
+      if (sel) found = true;
+      return '<option value="' + App.esc(name) + '"' + (sel ? ' selected' : '') + '>' + App.esc(name) +
+        ' (' + (counts[dKey(name)] || 0) + ' งาน' + (note || '') + ')</option>';
+    }
+    var html = '<option value=""' + (cur ? '' : ' selected') + '>— ยังไม่มอบหมาย —</option>';
+    if (names.designers.length) {
+      html += '<optgroup label="ผู้ออกแบบ">' + names.designers.map(function (d) {
+        return opt(d.name, d.accepting === false ? ' · งดรับงาน' : '');
+      }).join('') + '</optgroup>';
+    }
+    if (names.staff.length) {
+      html += '<optgroup label="บัญชีเจ้าหน้าที่อื่น">' + names.staff.map(function (n) { return opt(n); }).join('') + '</optgroup>';
+    }
+    if (!found) html += '<optgroup label="ผู้รับผิดชอบปัจจุบัน">' + opt(current) + '</optgroup>';
+    return html;
+  }
+
+  /** ตัวกรองผู้รับผิดชอบในคิวงาน คืนค่าที่เลือก ('' = ทุกคน, '__none' = ยังไม่มอบหมาย, อื่น ๆ = คีย์ชื่อ) */
+  function renderAssigneeFilter() {
+    var el = document.getElementById('q-assignee');
+    if (!el) return '';
+    var value = el.value;
+    var seen = {};
+    var list = [];
+    function add(name) {
+      var k = dKey(name);
+      if (!k || seen[k]) return;
+      seen[k] = true;
+      list.push({ key: k, name: String(name).replace(/\s+/g, ' ').trim() });
+    }
+    var names = assigneeNames();
+    names.designers.forEach(function (d) { add(d.name); });
+    names.staff.forEach(add);
+    queueCache.forEach(function (r) { add(r.assignedTo); });
+    el.innerHTML = '<option value="">ทุกคน</option><option value="__none">ยังไม่มอบหมาย</option>' +
+      list.map(function (x) { return '<option value="' + App.esc(x.key) + '">' + App.esc(x.name) + '</option>'; }).join('');
+    el.value = (value === '__none' || seen[value]) ? value : '';
+    return el.value;
+  }
+
+  /** เปลี่ยนผู้รับผิดชอบจาก dropdown ในแถวคิวงานได้ทันที (เจ้าหน้าที่ทุกคนทำได้) */
+  function quickAssign(jobId, sel) {
+    var row = queueCache.filter(function (r) { return r.jobId === jobId; })[0];
+    if (!row) return;
+    var name = sel.value;
+    if (dKey(name) === dKey(row.assignedTo)) return;
+    sel.disabled = true;
+    App.api('apiAdminAssign', [token, jobId, name]).then(function (res) {
+      designerLoadedAt = 0;
+      Workload.invalidate();
+      if (currentJob && currentJob.request.jobId === jobId) applyJob(res.job); else patchRow(res.job.row);
+      App.toast(name ? jobId + ' มอบหมายให้ ' + name + ' แล้ว' : jobId + ' ยกเลิกการมอบหมายแล้ว', 'ok');
+    }).catch(function (err) {
+      renderQueue(); // คืนค่าเดิมใน dropdown
+      handleAuthError(err);
+    });
   }
 
   function assigneeHtml(name) {
@@ -1249,7 +1348,11 @@ var Admin = (function () {
       var match = designerOf(current);
       // คนที่ซ่อนไว้ไม่แสดงให้เลือก ยกเว้นคนที่รับงานนี้อยู่แล้ว
       var list = data.designers.filter(function (d) { return d.active || (match && match.id === d.id); });
-      var picked = !current ? '' : (match ? match.id : '__other');
+      var staffNames = data.staff || [];
+      var staffIdx = -1;
+      for (var si = 0; si < staffNames.length; si++) if (dKey(staffNames[si]) === dKey(current)) staffIdx = si;
+      var counts = activeCounts();
+      var picked = !current ? '' : (match ? match.id : (staffIdx >= 0 ? 'staff:' + staffIdx : '__other'));
       function opt(value, color, title, sub, extra) {
         return '<label class="as-opt" style="--c:' + color + '">' +
           '<input class="form-check-input mt-0" type="radio" name="as-pick" value="' + App.esc(value) + '"' +
@@ -1268,6 +1371,10 @@ var Admin = (function () {
             '<span class="as-load"><span class="mini-bar" style="--c:' + d.color + '"><i style="width:' +
               Math.min(100, d.loadPct) + '%"></i></span>' + d.activeJobs + '/' + d.capacity + ' งาน</span>');
         }).join('') +
+        (staffNames.length ? '<div class="as-group">บัญชีเจ้าหน้าที่อื่น</div>' + staffNames.map(function (n, i) {
+          return opt('staff:' + i, '#64748b', n, 'บัญชีเจ้าหน้าที่ในระบบ (ผู้ขอเห็นเป็น "เจ้าหน้าที่ฝ่ายฯ")',
+            '<span class="as-load">' + (counts[dKey(n)] || 0) + ' งาน</span>');
+        }).join('') : '') +
         opt('__other', '#cbd5e1', 'ชื่ออื่นที่ไม่อยู่ในรายชื่อ', '') +
         '</div>' +
         '<div id="as-other-wrap" class="mt-2' + (picked === '__other' ? '' : ' d-none') + '">' +
@@ -1288,6 +1395,9 @@ var Admin = (function () {
             setTimeout(assign, 400);
             return;
           }
+        } else if (v.indexOf('staff:') === 0) {
+          name = staffNames[+v.substring(6)] || '';
+          chosen = { email: true }; // บัญชีเจ้าหน้าที่มีอีเมลเสมอ ระบบแจ้งให้
         } else if (v) {
           chosen = list.filter(function (d) { return d.id === v; })[0];
           name = chosen ? chosen.name : '';
@@ -2326,7 +2436,7 @@ var Admin = (function () {
     deleteRequest: deleteRequest, resetData: resetData,
     editUser: editUser, openChangePassword: openChangePassword, exportCsv: exportCsv,
     assignPickChange: assignPickChange, editDesigner: editDesigner, deleteDesigner: deleteDesigner,
-    addSuggestedDesigner: addSuggestedDesigner
+    addSuggestedDesigner: addSuggestedDesigner, quickAssign: quickAssign
   };
 })();
 </script>
