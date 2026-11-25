@@ -178,7 +178,7 @@ docs/
 ## การทดสอบ
 
 ```bash
-npm test          # Apps Script 289 รายการ + Cloudflare 35 รายการ
+npm test          # Apps Script 289 รายการ + Cloudflare 40 รายการ
 ```
 
 ชุดทดสอบ Apps Script ครอบคลุม การติดตั้งระบบ การตรวจสอบข้อมูลแบบฟอร์ม การออกเลขที่งาน

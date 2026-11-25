@@ -571,7 +571,7 @@ test('ผู้ดูแลระบบกลับมาใช้ Apps Script (
   eq(gas.ctx.isBackupMode_(), false);
   eq(gas.ctx.apiBootstrap().ok, true, 'Apps Script ใช้งานได้ตามปกติ');
   // รหัสลับผิดสั่งหยุดไม่ได้
-  const bad = await cf.req('POST', '/setup/detach', { secret: 'x' + told[0].body.secret.slice(1) });
+  const bad = await cf.req('POST', '/setup/detach', { secret: wrongTok(told[0].body.secret) });
   eq(bad.status, 403);
   eq((await cf.post('/setup/status')).detached, false);
   eq((await cf.post('/setup/detach', told[0].body)).ok, true);
@@ -673,6 +673,146 @@ test('หน้า /setup ตรวจเทียบ/ส่งใหม่ ต�
   eq((await cf.post('/setup/resync', {})).ok, false);
 });
 
+group('6b. ไฟล์แนบส่งตรงไป Apps Script ด้วยใบอนุญาต (ไม่ผ่าน Cloudflare)');
+
+/** ทำแบบเดียวกับ shim.js ในเบราว์เซอร์: ขอใบอนุญาต → ส่งไฟล์ตรงไป Apps Script → ส่งคำสั่งพร้อมใบรับไฟล์ */
+async function directUpload(cf, gas, fn, args) {
+  const files = [];
+  args.forEach((a) => {
+    if (a && typeof a === 'object') {
+      if (typeof a.dataB64 === 'string') files.push(a);
+      if (a.file && typeof a.file.dataB64 === 'string') files.push(a.file);
+    }
+  });
+  const probe = JSON.parse(JSON.stringify(args, (k, v) => (k === 'dataB64' ? 'precheck:' + Buffer.from(v, 'base64').length : v)));
+  const t = await cf.post('/api/ticket', { fn, args: probe });
+  if (!t.ok) return { ticket: t };
+  const ups = files.map((f, i) => JSON.parse(gas.ctx.doPost({ postData: { contents: JSON.stringify({
+    op: 'upload', ticket: t.tickets[i], name: f.fileName, mime: f.mimeType, b64: f.dataB64 }) } }).getContent()));
+  ups.forEach((u, i) => { if (u.ok) files[i].dataB64 = 'staged:' + u.id + ':' + u.size + ':' + u.sig; });
+  if (ups.some((u) => !u.ok)) return { ticket: t, ups };
+  return { ticket: t, ups, res: await cf.api(fn, ...args) };
+}
+/** token ที่ผิดแน่นอน (เปลี่ยนตัวแรกเป็นตัวอื่นเสมอ เดิมใช้ 'x' ซึ่งตรงกับตัวจริง 1 ใน 64 ครั้ง) */
+const wrongTok = (t) => (t[0] === 'x' ? 'y' : 'x') + t.slice(1);
+const driveCount = (gas) => Object.keys(gas.state.drive.files).length;
+const gasUpload = (gas, body) => JSON.parse(gas.ctx.doPost({ postData: { contents: JSON.stringify(Object.assign({ op: 'upload' }, body)) } }).getContent());
+
+test('ขอใบอนุญาตแล้วส่งไฟล์ตรงไป Apps Script: ไฟล์เข้าโฟลเดอร์งาน โดย Cloudflare ไม่ต้องรับข้อมูลไฟล์', async () => {
+  const { cf, gas } = await paired();
+  const sub = await cf.api('apiSubmitRequest', payload({ projectName: 'อัปโหลดตรง' }));
+  const { jobId, trackToken } = sub.data;
+  const callsBefore = net.calls.length;
+  const a = await directUpload(cf, gas, 'apiUploadFile', [jobId, trackToken, fileArg('โปสเตอร์.pdf', 'poster-bytes')]);
+  eq(a.ticket.ok, true, a.ticket.error);
+  eq(a.res.ok, true, a.res.error);
+  const b = await directUpload(cf, gas, 'apiUploadFile', [jobId, trackToken, fileArg('ภาพ.png', 'png-bytes')]);
+  eq(b.res.ok, true, b.res.error);
+  eq(net.calls.slice(callsBefore).filter((c) => c === 'stage').length, 0, 'Cloudflare ไม่ได้ส่งข้อมูลไฟล์ไปพักเอง');
+  eq((await cf.api('apiFinalizeRequest', jobId, trackToken)).ok, true);
+  await cf.obj.deliver();
+  const req = gas.ctx.getRequest_(jobId);
+  eq(String(req.attachmentCount), '2');
+  const files = gas.state.drive.folders[req.folderId].files.filter((f) => !f.trashed);
+  eq(files.length, 2, 'ไฟล์ทั้งสองย้ายจากที่พักเข้าโฟลเดอร์งาน');
+  eq(files.map((f) => f.blob.getDataAsString()).sort().join(','), 'png-bytes,poster-bytes');
+  await assertSame(cf, 'หลังอัปโหลดตรง');
+});
+
+test('ใบอนุญาตออกให้เฉพาะผู้มีสิทธิ์ ตรวจชนิดและขนาดไฟล์ก่อนส่ง และการตรวจไม่บันทึกอะไรเลย', async () => {
+  const { cf, gas } = await paired();
+  const sub = await cf.api('apiSubmitRequest', payload());
+  const { jobId, trackToken } = sub.data;
+  await cf.obj.deliver();
+  const files0 = driveCount(gas);
+  const pending0 = (await cf.post('/setup/status')).pending;
+  const ask = (args) => cf.post('/api/ticket', { fn: 'apiUploadFile', args });
+  const bad = await ask([jobId, wrongTok(trackToken), { fileName: 'a.pdf', mimeType: 'application/pdf', dataB64: 'precheck:100' }]);
+  eq(bad.ok, false, 'token ผิดไม่ได้ใบอนุญาต');
+  assert(/ไม่มีสิทธิ์/.test(bad.error), bad.error);
+  const exe = await ask([jobId, trackToken, { fileName: 'virus.exe', mimeType: 'application/x-msdownload', dataB64: 'precheck:100' }]);
+  eq(exe.ok, false);
+  assert(/ไม่รองรับไฟล์/.test(exe.error), exe.error);
+  const maxMB = Number(gas.ctx.getSettingInt_('maxFileMB', 10));
+  const big = await ask([jobId, trackToken, { fileName: 'big.pdf', mimeType: 'application/pdf', dataB64: 'precheck:' + (maxMB * 1024 * 1024 + 1) }]);
+  eq(big.ok, false, 'ไฟล์เกินขนาดที่ตั้งไว้ถูกปฏิเสธก่อนอัปโหลด');
+  assert(/เกินกำหนด/.test(big.error), big.error);
+  const raw = await ask([jobId, trackToken, fileArg('a.pdf', 'real-bytes')]);
+  eq(raw.ok, false, 'ขอใบอนุญาตต้องไม่ส่งข้อมูลไฟล์จริงมา');
+  const staffOnly = await cf.post('/api/ticket', { fn: 'apiAdminUploadFile', args: ['bad-token', jobId, { fileName: 'f.pdf', mimeType: 'application/pdf', dataB64: 'precheck:10' }, 'final'] });
+  eq(staffOnly.ok, false, 'ไฟล์ส่งมอบต้องเข้าสู่ระบบ');
+  const ok = await ask([jobId, trackToken, { fileName: 'a.pdf', mimeType: 'application/pdf', dataB64: 'precheck:100' }]);
+  eq(ok.ok, true, ok.error);
+  eq(ok.tickets.length, 1);
+  eq(ok.gasUrl, GAS_URL);
+  await cf.obj.deliver();
+  eq(driveCount(gas), files0, 'ตรวจสิทธิ์ไม่สร้างไฟล์บน Drive');
+  eq((await cf.post('/setup/status')).pending, pending0, 'ตรวจสิทธิ์ไม่สร้างการเปลี่ยนแปลงที่ต้องส่งสำรอง');
+  eq(gas.ctx.getRequest_(jobId).attachmentCount === '' ? 0 : Number(gas.ctx.getRequest_(jobId).attachmentCount), 0);
+  await assertSame(cf, 'หลังตรวจสิทธิ์');
+});
+
+test('Apps Script ปฏิเสธใบอนุญาตปลอม หมดอายุ ใช้ซ้ำ และไฟล์ขนาดไม่ตรง', async () => {
+  const { cf, gas } = await paired();
+  const sub = await cf.api('apiSubmitRequest', payload());
+  const { jobId, trackToken } = sub.data;
+  const b64 = Buffer.from('hello-file').toString('base64');
+  const getTicket = async () => (await cf.post('/api/ticket', { fn: 'apiUploadFile',
+    args: [jobId, trackToken, { fileName: 'a.pdf', mimeType: 'application/pdf', dataB64: 'precheck:10' }] })).tickets[0];
+  const files0 = driveCount(gas);
+  const t1 = await getTicket();
+  const forged = t1.slice(0, -1) + (t1.slice(-1) === '0' ? '1' : '0');
+  eq(gasUpload(gas, { ticket: forged, name: 'a.pdf', b64 }).code, 'TICKET', 'ลายมือชื่อผิด');
+  eq(gasUpload(gas, { ticket: t1.replace(/\.10\./, '.11.'), name: 'a.pdf', b64 }).code, 'TICKET', 'แก้ขนาดในใบอนุญาตไม่ได้');
+  const wrongSize = gasUpload(gas, { ticket: await getTicket(), name: 'a.pdf', b64: Buffer.from('longer-than-ten').toString('base64') });
+  eq(wrongSize.ok, false, 'ไฟล์ใหญ่กว่าที่ขอไว้');
+  const good = gasUpload(gas, { ticket: t1, name: 'a.pdf', mime: 'application/pdf', b64 });
+  eq(good.ok, true, good.error);
+  eq(good.size, 10);
+  assert(/^[0-9a-f]{32}$/.test(good.sig));
+  eq(gasUpload(gas, { ticket: t1, name: 'a.pdf', b64 }).code, 'TICKET', 'ใช้ใบอนุญาตซ้ำไม่ได้');
+  const secret = gas.state.props.BRIDGE_SECRET;
+  const past = String(Date.now() - 1000);
+  const expired = past + '.abcdef012345.10.' + gas.ctx.bridgeSigHex_(secret, 'up|' + past + '|abcdef012345|10');
+  eq(gasUpload(gas, { ticket: expired, name: 'a.pdf', b64 }).code, 'TICKET', 'หมดอายุ');
+  eq(driveCount(gas), files0 + 1, 'มีไฟล์เข้าที่พักเฉพาะครั้งที่ใบอนุญาตถูกต้อง');
+  // ใบรับไฟล์ที่ Apps Script ลงลายมือชื่อ Cloudflare ตรวจผ่านและแนบเข้างานได้
+  const used = await cf.api('apiUploadFile', jobId, trackToken, { fileName: 'a.pdf', mimeType: 'application/pdf',
+    dataB64: 'staged:' + good.id + ':' + good.size + ':' + good.sig });
+  eq(used.ok, true, used.error);
+});
+
+test('ส่งผ่าน Cloudflare แบบเดิม (ทางสำรอง) ต้องตรวจสิทธิ์ก่อนพักไฟล์บน Drive', async () => {
+  const { cf, gas } = await paired();
+  const sub = await cf.api('apiSubmitRequest', payload());
+  const files0 = driveCount(gas);
+  const callsBefore = net.calls.length;
+  const r = await cf.api('apiUploadFile', sub.data.jobId, wrongTok(sub.data.trackToken), fileArg('a.pdf', 'should-not-store'));
+  eq(r.ok, false);
+  assert(/ไม่มีสิทธิ์/.test(r.error), r.error);
+  eq(net.calls.slice(callsBefore).filter((c) => c === 'stage').length, 0, 'ไม่ส่งไฟล์ไปพัก');
+  eq(driveCount(gas), files0, 'ไม่มีไฟล์ใหม่บน Drive');
+  const fake = await cf.api('apiUploadFile', sub.data.jobId, sub.data.trackToken, { fileName: 'a.pdf', mimeType: 'application/pdf', dataB64: 'precheck:10' });
+  eq(fake.ok, false, 'ส่งไฟล์จำลองสำหรับตรวจสิทธิ์มาเป็นคำสั่งจริงไม่ได้');
+});
+
+test('ส่งไปสำรองทีละไม่เกิน 20 ชุดต่อครั้ง (แผนฟรีเรียกออกได้ 50 ครั้ง) ที่เหลือส่งต่อรอบถัดไป', async () => {
+  const { cf, gas } = await paired();
+  for (let i = 0; i < 25; i++) {
+    const ops = [];
+    for (let j = 0; j < 400; j++) ops.push({ t: 'prop', k: 'BULK_' + i, v: String(j) });
+    cf.obj.store.sql.exec('INSERT INTO outbox (ops, n, at) VALUES (?, ?, ?)', JSON.stringify(ops), ops.length, Date.now());
+  }
+  const before = net.calls.length;
+  await cf.obj.deliver();
+  eq(net.calls.slice(before).filter((c) => c === 'batch').length, 20, 'รอบแรกส่ง 20 ชุด');
+  eq((await cf.post('/setup/status')).pending, 5);
+  assert(cf.alarm, 'ตั้งเวลาส่งต่อ');
+  await cf.obj.deliver();
+  eq((await cf.post('/setup/status')).pending, 0, 'รอบถัดไปส่งครบ');
+  eq(gas.state.props.BULK_24, '399');
+});
+
 group('7. หน้าเว็บและความปลอดภัย');
 
 test('หน้าแรกฝังข้อมูลตั้งต้น และใช้ google.script.run ผ่าน /api', async () => {
@@ -681,7 +821,8 @@ test('หน้าแรกฝังข้อมูลตั้งต้น แ�
   eq(res.status, 200);
   const html = await res.text();
   assert(html.indexOf('var BOOT = {') >= 0, 'ฝัง BOOT');
-  assert(html.indexOf("fetch('/api'") >= 0, 'มีตัวเชื่อม google.script.run');
+  assert(html.indexOf("postJson('/api'") >= 0, 'มีตัวเชื่อม google.script.run');
+  assert(html.indexOf("'/api/ticket'") >= 0, 'ไฟล์แนบขอใบอนุญาตก่อนส่งตรงไป Apps Script');
   assert(html.indexOf('"page":"form"') >= 0);
   assert(html.indexOf('<?') < 0, 'ไม่มีแท็กเทมเพลตตกค้าง');
   eq(res.headers.get('referrer-policy'), 'no-referrer');

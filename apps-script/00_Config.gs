@@ -11,7 +11,7 @@ var APP = {
   SHORT_NAME: 'L-Arts Design Request',
   ORG: 'ฝ่ายสื่อสารองค์กร คณะศิลปศาสตร์ มหาวิทยาลัยธรรมศาสตร์',
   ORG_SHORT: 'คณะศิลปศาสตร์ มธ.',
-  VERSION: '1.1.0',
+  VERSION: '1.1.1',
   TIMEZONE: 'Asia/Bangkok',
   ROOT_FOLDER_NAME: 'Design Request System'
 };

@@ -204,6 +204,13 @@ function cfB64Decode(str) {
  * โค้ดเดิมใช้แค่ .length กับส่งต่อให้ createFile จึงไม่ต้องถือข้อมูลไฟล์ไว้ใน Durable Object
  */
 function cfStagedBytes(text) {
+  // ตรวจสิทธิ์ก่อนอัปโหลด: รันคำสั่งจริงจนถึงจุดอ่านไฟล์ ได้ขนาดตามที่แจ้ง (Durable Object ไม่บันทึกผลรอบนี้)
+  var pm = /^precheck:(\d+)$/.exec(String(text));
+  if (pm) {
+    if (!HOST.precheck()) throw new Error('ข้อมูลไฟล์ไม่ถูกต้อง');
+    HOST.precheckDecoded();
+    return { _precheck: true, length: +pm[1] };
+  }
   var m = /^staged:([A-Za-z0-9_-]+):(\d+):([0-9a-f]{32})$/.exec(String(text));
   if (!m) return null;
   // ตรวจลายมือชื่อที่ Worker ลงไว้ (คนภายนอกปลอมใบรับไฟล์เพื่อย้ายไฟล์อื่นบน Drive ไม่ได้)
@@ -260,6 +267,7 @@ var Utilities = {
   base64Decode: function (s) { return cfStagedBytes(s) || cfSigned(cfB64Decode(s)); },
   base64DecodeWebSafe: function (s) { return cfSigned(cfB64Decode(String(s).replace(/-/g, '+').replace(/_/g, '/'))); },
   newBlob: function (bytes, type, name) {
+    if (bytes && bytes._precheck) HOST.precheckStop();
     return cfBlob(typeof bytes === 'string' ? CF_ENC.encode(bytes) : bytes, type, name);
   }
 };

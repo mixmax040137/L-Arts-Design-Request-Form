@@ -359,7 +359,7 @@ npm run deploy:cf              # ทดสอบทั้งหมด แล้�
 | งาน | ทำที่ | หมายเหตุ |
 |---|---|---|
 | ยื่นคำขอ ติดตาม คิวงาน แดชบอร์ด ตั้งค่า | Cloudflare | ข้อมูลหลักอยู่ที่นี่ |
-| ไฟล์แนบและไฟล์ส่งมอบ | Google Drive (ผ่าน Apps Script) | Cloudflare ส่งไฟล์ไปพักที่ Drive ก่อน แล้วย้ายเข้าโฟลเดอร์งาน |
+| ไฟล์แนบและไฟล์ส่งมอบ | Google Drive (ผ่าน Apps Script) | Cloudflare ตรวจสิทธิ์ก่อน แล้วเบราว์เซอร์ส่งไฟล์ตรงไป Apps Script (ไฟล์ใหญ่ไม่ผ่าน Cloudflare) จากนั้นย้ายเข้าโฟลเดอร์งาน |
 | โฟลเดอร์ประจำงาน | Google Drive | Apps Script เตรียมโฟลเดอร์ว่างไว้ล่วงหน้า กดยื่นคำขอแล้วไม่ต้องรอ Google |
 | อีเมลแจ้งเตือนทุกชนิด | Gmail ของ pr@arts.tu.ac.th (ผ่าน Apps Script) | ลิงก์ในอีเมลชี้มาที่ Cloudflare |
 | สรุป Design Brief ด้วย Claude | Cloudflare เรียกเอง | ใช้ API key เดิม (ย้ายมาตอนจับคู่) เปลี่ยนได้ที่หน้าตั้งค่าบน Cloudflare |
@@ -671,7 +671,7 @@ Deploy → **Manage deployments** → ไอคอนดินสอ → ตร�
 โครงการมีชุดทดสอบอัตโนมัติที่รันได้บนเครื่องโดยไม่ต้องแตะระบบจริง
 
 ```bash
-npm test          # ทั้งหมด: Apps Script 289 รายการ + Cloudflare 35 รายการ
+npm test          # ทั้งหมด: Apps Script 289 รายการ + Cloudflare 40 รายการ
 npm run test:gas  # เฉพาะ Apps Script
 npm run test:cf   # เฉพาะ Cloudflare (ต้องใช้ Node 22.5 ขึ้นไป รุ่นเก่ากว่าจะข้ามให้เอง)
 ```

@@ -26,7 +26,7 @@ var APP = {
   SHORT_NAME: 'L-Arts Design Request',
   ORG: 'ฝ่ายสื่อสารองค์กร คณะศิลปศาสตร์ มหาวิทยาลัยธรรมศาสตร์',
   ORG_SHORT: 'คณะศิลปศาสตร์ มธ.',
-  VERSION: '1.1.0',
+  VERSION: '1.1.1',
   TIMEZONE: 'Asia/Bangkok',
   ROOT_FOLDER_NAME: 'Design Request System'
 };
@@ -5937,6 +5937,8 @@ function doPost(e) {
 function bridgeHandle_(b) {
   var op = str_(b.op);
   if (op === 'pair') return bridgePair_(b);
+  // เบราว์เซอร์ของผู้ใช้ส่งไฟล์มาตรงพร้อมใบอนุญาตจาก Cloudflare (ไม่มีรหัสลับ)
+  if (op === 'upload') return bridgeUpload_(b);
 
   var active = getProp_(BRIDGE.SECRET);
   var pending = getProp_(BRIDGE.PENDING_SECRET);
@@ -6233,10 +6235,57 @@ function bridgeStage_(b) {
     return { ok: false, error: 'ไฟล์เสียหายหรืออ่านไม่ได้ กรุณาลองใหม่' };
   }
   if (bytes.length > BRIDGE_MAX_FILE_BYTES) return { ok: false, error: 'ไฟล์ใหญ่เกิน 30 MB' };
-  var name = safeFileName_(truncate_(str_(b.name) || 'file', 200));
+  return bridgeStageBytes_(bytes, b.name, b.mime);
+}
+
+function bridgeStageBytes_(bytes, name, mime) {
+  var safe = safeFileName_(truncate_(str_(name) || 'file', 200));
   var file = bridgeStagingFolder_().createFile(
-    Utilities.newBlob(bytes, str_(b.mime) || 'application/octet-stream', name));
+    Utilities.newBlob(bytes, str_(mime) || 'application/octet-stream', safe));
   return { ok: true, id: file.getId(), size: bytes.length };
+}
+
+/** ลายมือชื่อแบบเดียวกับที่ Cloudflare ใช้ (HMAC-SHA256 16 ไบต์แรก เป็นเลขฐานสิบหก) */
+function bridgeSigHex_(secret, message) {
+  var bytes = Utilities.computeHmacSha256Signature(String(message), String(secret));
+  var out = '';
+  for (var i = 0; i < 16; i++) {
+    var v = (bytes[i] + 256) % 256;
+    out += (v < 16 ? '0' : '') + v.toString(16);
+  }
+  return out;
+}
+
+/**
+ * รับไฟล์ตรงจากเบราว์เซอร์ (ไฟล์ใหญ่ไม่ต้องผ่าน Cloudflare ซึ่งจำกัดเวลาประมวลผลต่อคำขอ)
+ * ต้องมีใบอนุญาตที่ Cloudflare ออกให้หลังตรวจสิทธิ์แล้ว: "หมดอายุ.nonce.ขนาด.ลายมือชื่อ"
+ * ใช้ได้ครั้งเดียว ขนาดไฟล์ต้องตรงกับที่ขอไว้ คืนใบรับไฟล์ที่ลงลายมือชื่อให้ Cloudflare ตรวจซ้ำ
+ */
+function bridgeUpload_(b) {
+  var secret = getProp_(BRIDGE.SECRET);
+  if (!secret) {
+    return { ok: false, code: 'NOT_PAIRED', error: 'Apps Script ไม่ได้เชื่อมกับ Cloudflare แล้ว กรุณารีเฟรชหน้าแล้วลองใหม่' };
+  }
+  var invalid = { ok: false, code: 'TICKET', error: 'ใบอนุญาตอัปโหลดไม่ถูกต้องหรือหมดอายุ กรุณากดส่งไฟล์ใหม่อีกครั้ง' };
+  var t = str_(b.ticket).split('.');
+  if (t.length !== 4 || !/^\d+$/.test(t[0]) || !/^[0-9a-f]{8,64}$/.test(t[1]) || !/^\d+$/.test(t[2])) return invalid;
+  if (Number(t[0]) < new Date().getTime()) return invalid;
+  if (!timingSafeEqual_(t[3], bridgeSigHex_(secret, 'up|' + t[0] + '|' + t[1] + '|' + t[2]))) return invalid;
+  var cache = CacheService.getScriptCache();
+  if (cache.get('bup:' + t[1])) return invalid;
+  cache.put('bup:' + t[1], '1', 21600);
+  var bytes;
+  try {
+    bytes = Utilities.base64Decode(str_(b.b64));
+  } catch (err) {
+    return { ok: false, error: 'ไฟล์เสียหายหรืออ่านไม่ได้ กรุณาลองใหม่' };
+  }
+  if (bytes.length !== Number(t[2]) || bytes.length > BRIDGE_MAX_FILE_BYTES) {
+    return { ok: false, error: 'ขนาดไฟล์ไม่ตรงกับที่ตรวจสอบไว้ กรุณาเลือกไฟล์ใหม่แล้วลองอีกครั้ง' };
+  }
+  var res = bridgeStageBytes_(bytes, b.name, b.mime);
+  res.sig = bridgeSigHex_(secret, res.id + ':' + res.size);
+  return res;
 }
 
 /** ไฟล์ที่พักไว้แต่ไม่ได้ใช้ (เช่น ผู้ใช้ปิดหน้ากลางทาง) ย้ายลงถังขยะหลัง 24 ชั่วโมง */

@@ -28,6 +28,11 @@ const ROWS_OP_MAX = 800000;               // แบ่งแถวที่ส�
 const MAX_BODY = 60 * 1024 * 1024;
 const MAX_FILE_B64 = Math.ceil(30 * 1024 * 1024 / 3) * 4;
 const MAX_IO_ROUNDS = 25;
+/** ไฟล์หนึ่งไฟล์ใหญ่สุด (ตรงกับ BRIDGE_MAX_FILE_BYTES ของ Apps Script) และอายุใบอนุญาตอัปโหลด */
+const MAX_FILE_BYTES = 30 * 1024 * 1024;
+const TICKET_TTL_MS = 15 * 60000;
+/** ส่งไปสำรองได้ไม่เกินกี่ชุดต่อครั้ง (แผนฟรีเรียกออกได้ 50 ครั้งต่อการทำงานหนึ่งครั้ง) ที่เหลือทำต่อในรอบถัดไป */
+const DELIVER_MAX_BATCHES = 20;
 const SPARE_MIN = 3;
 const SPARE_TARGET = 8;
 const FOLDER_STATUS_TTL = 10 * 60 * 1000;
@@ -52,13 +57,13 @@ export default {
     const url = new URL(request.url);
     if (url.pathname.startsWith('/internal')) return text('ไม่พบหน้านี้', 404);
     const stub = env.APP.get(env.APP.idFromName('main'));
-    if (request.method === 'POST' && url.pathname === '/api') return apiViaWorker(request, stub);
+    if (request.method === 'POST' && url.pathname === '/api') return apiViaWorker(request, stub, url);
     return stub.fetch(request);
   }
 };
 
 /** คำสั่งจากหน้าเว็บ: ถ้ามีไฟล์แนบ ส่งไฟล์ไปพักบน Drive ก่อน แล้วแทนข้อมูลไฟล์ด้วยใบรับไฟล์ที่ลงลายมือชื่อแล้ว */
-async function apiViaWorker(request, stub) {
+async function apiViaWorker(request, stub, url) {
   const len = Number(request.headers.get('content-length') || 0);
   if (len > MAX_BODY) return json({ ok: false, error: 'ข้อมูลใหญ่เกินไป กรุณาลดขนาดไฟล์' }, 413);
   const raw = await request.text();
@@ -67,12 +72,19 @@ async function apiViaWorker(request, stub) {
   if (raw.indexOf('"dataB64"') >= 0) {
     let body;
     try { body = JSON.parse(raw); } catch (e) { return json({ ok: false, error: 'ข้อมูลที่ส่งมาไม่ถูกต้อง' }, 400); }
-    const files = collectFiles(body && body.args);
+    // ใบรับไฟล์ "staged:" จากการส่งตรงไป Apps Script ผ่านไปได้เลย (Durable Object ตรวจลายมือชื่อซ้ำ)
+    const files = collectFiles(body && body.args).filter((f) => !/^staged:/.test(f.dataB64));
     if (files.length) {
       for (const f of files) {
-        if (/^staged:/.test(f.dataB64)) return json({ ok: false, error: 'ข้อมูลไฟล์ไม่ถูกต้อง' }, 400);
+        if (/^precheck:/.test(f.dataB64)) return json({ ok: false, error: 'ข้อมูลไฟล์ไม่ถูกต้อง' }, 400);
         if (f.dataB64.length > MAX_FILE_B64) return json({ ok: false, error: 'ไฟล์ "' + String(f.fileName || '') + '" ใหญ่เกิน 30 MB' });
       }
+      // ตรวจสิทธิ์ก่อนส่งไฟล์ไปพักบน Drive (คนที่ไม่มีสิทธิ์ส่งไฟล์เข้า Drive ของคณะไม่ได้)
+      const probe = JSON.parse(JSON.stringify(body, (k, v) => (k === 'dataB64' && typeof v === 'string' ? 'precheck:' + b64Size(v) : v)));
+      const pre = await (await stub.fetch(new Request(url.origin + '/api/ticket', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(probe)
+      }))).json();
+      if (!pre.ok) return json(pre);
       const info = await (await stub.fetch('https://internal/internal/bridge')).json();
       if (!info.paired) return json({ ok: false, error: 'ระบบยังไม่พร้อมรับไฟล์ กรุณาติดต่อฝ่ายสื่อสารองค์กร' });
       for (const f of files) {
@@ -84,6 +96,12 @@ async function apiViaWorker(request, stub) {
     }
   }
   return stub.fetch(new Request(request.url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: forward }));
+}
+
+/** ขนาดจริงของข้อมูล base64 (ไม่สร้างสำเนาของข้อความยาว) */
+function b64Size(s) {
+  const pad = s.endsWith('==') ? 2 : (s.endsWith('=') ? 1 : 0);
+  return Math.max(0, Math.floor(s.length * 3 / 4) - pad);
 }
 
 /** ไฟล์ในอาร์กิวเมนต์ของ api* (อาร์กิวเมนต์ที่เป็นไฟล์เอง หรือ payload.file) */
@@ -99,10 +117,13 @@ function collectFiles(args) {
 }
 
 /** ลายมือชื่อของใบรับไฟล์ (HMAC-SHA256 ด้วยรหัสลับร่วม) — Durable Object ตรวจซ้ำใน prelude.js */
-async function stagedSig(secret, id, size) {
+function stagedSig(secret, id, size) { return hmacHex16(secret, id + ':' + size); }
+
+/** HMAC-SHA256 16 ไบต์แรก เป็นเลขฐานสิบหก (แบบเดียวกับ bridgeSigHex_ ของ Apps Script) */
+async function hmacHex16(secret, message) {
   const enc = new TextEncoder();
   const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(id + ':' + size)));
+  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(message)));
   return Array.from(mac.slice(0, 16), (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
@@ -435,6 +456,7 @@ export class LartsDesign {
     this.store = new Store(st.sql, st.transactionSync ? (fn) => st.transactionSync(fn) : null);
     this.folderCache = new Map();
     this.jobs = Promise.resolve();
+    this.pre = null;   // สถานะระหว่างตรวจสิทธิ์ก่อนอัปโหลด (precheckRun)
     this.delivering = null;
     this.refilling = false;
     this.io = null;
@@ -470,7 +492,10 @@ export class LartsDesign {
       origin: () => s.getProp(P.ORIGIN) || '',
       io: (kind, args) => self.ioSync(kind, args),
       takeSpareFolder: () => self.takeSpare(),
-      stagedKey: () => s.getProp(P.SECRET) || ''
+      stagedKey: () => s.getProp(P.SECRET) || '',
+      precheck: () => !!self.pre,
+      precheckDecoded: () => { if (self.pre) self.pre.decoded = true; },
+      precheckStop: () => self.precheckStop()
     };
   }
 
@@ -533,6 +558,7 @@ export class LartsDesign {
 
   /** โค้ดของระบบขอผลจาก Google: มีในเทปแล้วคืนทันที ไม่มีก็จดไว้แล้วหยุดคำสั่ง */
   ioSync(kind, args) {
+    if (this.pre) this.precheckStop();
     const st = this.io;
     if (!st) throw new Error('ติดต่อ Google ได้เฉพาะระหว่างคำสั่งของระบบ');
     if (kind === 'folderStatus') {
@@ -625,7 +651,8 @@ export class LartsDesign {
       await null;
       try {
         // ระหว่างจับคู่ Apps Script ยังไม่รับข้อมูล (ยังไม่ยืนยัน) ห้ามส่ง ไม่งั้นจะถูกมองว่าเลิกเชื่อมกันแล้ว
-        while (this.paired() && !this.detached() && !this.pairing) {
+        let batches = 0;
+        while (this.paired() && !this.detached() && !this.pairing && batches++ < DELIVER_MAX_BATCHES) {
           const rows = this.store.rows('SELECT id, ops, n FROM outbox ORDER BY id LIMIT 50');
           if (!rows.length) break;
           let ops = [];
@@ -751,6 +778,7 @@ export class LartsDesign {
       if (request.method !== 'POST') return text('Method Not Allowed', 405);
       const body = await readJson(request);
       if (path === '/api') return json(await this.handleApi(body));
+      if (path === '/api/ticket') return json(await this.uploadTicket(body));
       if (path === '/setup/status') return json(this.setupStatus());
       if (path === '/setup/pair') return json(await this.setupPair(body));
       if (path === '/setup/detach') return this.setupDetach(body);
@@ -791,6 +819,71 @@ export class LartsDesign {
     if (!this.paired()) return { ok: false, error: 'ระบบยังไม่พร้อมใช้งาน กรุณาติดต่อฝ่ายสื่อสารองค์กร' };
     const args = Array.isArray(body.args) ? body.args : [];
     return await this.run((app) => app.call(fn, args));
+  }
+
+  /* ---------- อัปโหลดไฟล์: ตรวจสิทธิ์ก่อน แล้วให้เบราว์เซอร์ส่งไฟล์ตรงไป Apps Script ---------- */
+
+  /**
+   * ตรวจสิทธิ์ด้วยตรรกะเดิมของระบบทั้งหมด: รันคำสั่งจริงโดยใช้ไฟล์จำลอง "precheck:<ขนาด>"
+   * ถ้าคำสั่งเดินไปถึงจุดที่จะสร้างไฟล์ได้ (ผ่านการตรวจสิทธิ์ ชนิดไฟล์ จำนวน และขนาด) ถือว่าผ่าน
+   * รอบนี้ไม่บันทึกอะไรเลย และหยุดก่อนติดต่อ Google
+   */
+  precheckRun(fn, args) {
+    this.store.resetRun();
+    this.pre = { decoded: false, stopped: false };
+    let out;
+    let err = null;
+    try {
+      this.app.begin();
+      out = this.app.call(fn, args);
+    } catch (e) {
+      err = e;
+    }
+    const pre = this.pre;
+    this.pre = null;
+    this.store.discard();
+    if (pre.stopped && pre.decoded) return { ok: true };
+    if (out && out.ok === false && !pre.stopped) return { ok: false, error: out.error, code: out.code || '' };
+    if (err && err.userFacing && !err.precheck) return { ok: false, error: err.message };
+    return { ok: false, error: 'ตรวจสอบสิทธิ์การแนบไฟล์ไม่สำเร็จ กรุณารีเฟรชหน้าแล้วลองใหม่' };
+  }
+
+  precheckStop() {
+    if (this.pre) this.pre.stopped = true;
+    const e = new Error('ตรวจสอบสิทธิ์แล้ว');
+    e.userFacing = true;
+    e.precheck = true;
+    throw e;
+  }
+
+  /** ใบอนุญาตอัปโหลด (หนึ่งใบต่อไฟล์ ผูกกับขนาดไฟล์ ใช้ได้ครั้งเดียว อายุ 15 นาที) */
+  async uploadTicket(body) {
+    const fn = String(body.fn || '');
+    if (!API_SET.has(fn)) return { ok: false, error: 'ไม่พบคำสั่งนี้ กรุณารีเฟรชหน้า' };
+    if (this.detached()) return { ok: false, code: 'MOVED', error: 'ระบบกลับไปให้บริการที่ Apps Script ชั่วคราว กรุณารีเฟรชหน้านี้' };
+    if (!this.paired()) return { ok: false, error: 'ระบบยังไม่พร้อมรับไฟล์ กรุณาติดต่อฝ่ายสื่อสารองค์กร' };
+    const args = Array.isArray(body.args) ? body.args : [];
+    const files = collectFiles(args);
+    if (!files.length || files.length > 5) return { ok: false, error: 'ข้อมูลไฟล์ไม่ถูกต้อง กรุณาเลือกไฟล์ใหม่' };
+    const sizes = [];
+    for (const f of files) {
+      const m = /^precheck:(\d+)$/.exec(f.dataB64);
+      if (!m) return { ok: false, error: 'ข้อมูลไฟล์ไม่ถูกต้อง กรุณาเลือกไฟล์ใหม่' };
+      const size = Number(m[1]);
+      if (size < 1) return { ok: false, error: 'ไฟล์ "' + String(f.fileName || '') + '" ว่างเปล่า กรุณาเลือกไฟล์ใหม่' };
+      if (size > MAX_FILE_BYTES) return { ok: false, error: 'ไฟล์ "' + String(f.fileName || '') + '" ใหญ่เกิน 30 MB' };
+      sizes.push(size);
+    }
+    const res = this.precheckRun(fn, args);
+    if (!res.ok) return res;
+    const secret = this.store.getProp(P.SECRET) || '';
+    const exp = Date.now() + TICKET_TTL_MS;
+    const tickets = [];
+    for (const size of sizes) {
+      const nonce = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join('');
+      tickets.push(exp + '.' + nonce + '.' + size + '.' + await hmacHex16(secret, 'up|' + exp + '|' + nonce + '|' + size));
+    }
+    return { ok: true, gasUrl: this.store.getProp(P.GAS_URL) || '', tickets };
   }
 
   /** มีของค้างส่ง = ส่งเลย (รู้ผลจากการส่ง) ไม่มี = ถามสถานะ ถ้า Apps Script ไม่รู้จักรหัสลับแล้ว หยุดรับข้อมูล */

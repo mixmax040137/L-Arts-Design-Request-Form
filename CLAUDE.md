@@ -17,7 +17,7 @@
 ## คำสั่งที่ใช้บ่อย
 
 ```bash
-npm test            # Apps Script 289 + Cloudflare 35 รายการ ต้องผ่านทั้งหมดก่อน commit เสมอ (สร้าง dist/ ให้ด้วย)
+npm test            # Apps Script 289 + Cloudflare 40 รายการ ต้องผ่านทั้งหมดก่อน commit เสมอ (สร้าง dist/ ให้ด้วย)
 npm run test:cf     # เฉพาะ Cloudflare (ต้องใช้ Node 22.5+ เพราะใช้ node:sqlite รุ่นเก่ากว่าจะข้ามเอง)
 ./setup.sh          # ติดตั้ง Apps Script ครั้งแรก (Windows ใช้ .\setup.ps1)
 ./deploy.sh         # ทดสอบ อัปโหลด Apps Script และออกเวอร์ชันใหม่ทับ deployment เดิม
@@ -86,8 +86,15 @@ npm run deploy:cf   # ทดสอบ แล้วอัปโหลดขึ้
 - **ส่งสำรองทางเดียว Cloudflare → Apps Script** ทุกการเขียนที่ commit แล้วกลายเป็น ops ใน outbox (`rows` `trunc` `prop` `drive` `mail`)
   ส่งตามลำดับด้วย `deliver()` ลองใหม่เองด้วย alarm Apps Script รับที่ `doPost` → `bridgeBatch_` ใน `15_Bridge.gs`
   การแก้ในชีตสำรองไม่ย้อนกลับไปที่ Cloudflare (ซ่อมด้วย `/setup` → ส่งข้อมูลทั้งหมดใหม่)
-- อีเมลทั้งหมดส่งจาก Apps Script (`mail` op) ไฟล์อัปโหลดถูกส่งไปพักที่ Drive ก่อนเข้า Durable Object (`apiViaWorker`)
-  แล้วแทนด้วยใบรับ `staged:<id>:<size>:<sig>` ที่เซ็นด้วยรหัสลับคู่ ไบต์ไฟล์จึงไม่เข้าหน่วยความจำของ Durable Object
+- อีเมลทั้งหมดส่งจาก Apps Script (`mail` op)
+- **ไฟล์แนบไม่ผ่าน Cloudflare** (แผนฟรีให้ Worker ใช้ CPU ได้ 10 ms ต่อคำขอ แค่ JSON.parse ไฟล์ 1 MB ก็เกิน)
+  `web/shim.js` ขอใบอนุญาตที่ `/api/ticket` ก่อน Durable Object ตรวจสิทธิ์ด้วย `precheckRun` ซึ่งรันคำสั่ง `api*` จริง
+  โดยใช้ไฟล์จำลอง `precheck:<ขนาด>` จนถึงจุดสร้างไฟล์แล้วหยุด ไม่บันทึกอะไร (ตรวจสิทธิ์ ชนิด จำนวน ขนาด ด้วยตรรกะเดิมทั้งหมด)
+  จากนั้นเบราว์เซอร์ส่งไฟล์ตรงไป Apps Script (`op: 'upload'` ใบอนุญาตใช้ได้ครั้งเดียว ผูกขนาด อายุ 15 นาที)
+  ได้ใบรับ `staged:<id>:<size>:<sig>` ที่ Apps Script เซ็นด้วยรหัสลับคู่ แล้วจึงเรียก `/api` ซึ่ง Durable Object ตรวจลายมือชื่อซ้ำ
+  ถ้าส่งตรงไม่ได้ shim ส่งไฟล์ผ่าน `/api` แบบเดิม (`apiViaWorker` ตรวจสิทธิ์ก่อนแล้วจึงพักไฟล์) ฟังก์ชันที่รับไฟล์ใหม่
+  ต้องไม่ติดต่อ Drive/UrlFetch ก่อนอ่านไฟล์ด้วย `Utilities.base64Decode` ไม่เช่นนั้นการตรวจสิทธิ์ล่วงหน้าจะไม่ผ่าน
+- แผนฟรีเรียกออกได้ 50 ครั้งต่อการทำงานหนึ่งครั้ง `deliver()` จึงส่งไม่เกิน `DELIVER_MAX_BATCHES` ชุดต่อรอบ
 - Apps Script ในโหมดสำรอง (`isBackupMode_()`): `doGet` พาไป Cloudflare, `respond_` คืน `code: 'MOVED'`,
   `workerTick` และ `dailyReminder` ไม่ทำงาน (Cloudflare รันเองด้วย alarm) สลับกลับได้ที่ `?page=failover` (`apiBridgeFailover`)
   ซึ่งแจ้ง Cloudflare ที่ `/setup/detach` ทันที และ Cloudflare ถามสถานะ Apps Script เองทุก 5 นาที (`checkPeer`)
