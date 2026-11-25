@@ -5,8 +5,10 @@
 ## โครงการนี้คืออะไร
 
 ระบบขอรับบริการออกแบบสื่อประชาสัมพันธ์ ของฝ่ายสื่อสารองค์กร คณะศิลปศาสตร์ มหาวิทยาลัยธรรมศาสตร์
-สร้างด้วย **Google Apps Script** ล้วน โดยใช้ **Google Sheets เป็นฐานข้อมูล** และ **Google Drive เก็บไฟล์งาน**
-ทั้งระบบรันภายใต้บัญชี `pr@arts.tu.ac.th` ไม่มีเซิร์ฟเวอร์อื่น ไม่มี build step
+เขียนเป็น **Google Apps Script** (Google Sheets เป็นฐานข้อมูล Google Drive เก็บไฟล์งาน บัญชี `pr@arts.tu.ac.th`)
+แต่ **ระบบหลักรันบน Cloudflare** (`cloudflare/` Worker + Durable Object แบบ SQLite แผนฟรี)
+ที่ https://larts-design.mcorner-ap.workers.dev ด้วยโค้ด `.gs` ชุดเดียวกัน ส่วน Apps Script เป็น **ระบบสำรองอัตโนมัติ**
+ที่รับสำเนาข้อมูลทุกแถว และเป็นคนทำงานที่ต้องใช้ Google (Drive อีเมล) ให้ ดูหัวข้อ *Cloudflare* ด้านล่าง
 
 ที่มาของความต้องการอยู่ใน Workshop Canvas ของผู้ใช้ ปัญหาหลักที่ระบบต้องแก้คือ
 1. ข้อมูลคำขอไม่ครบตั้งแต่ต้นทาง ทำให้ต้องประสานงานย้อนกลับหลายรอบ
@@ -15,12 +17,14 @@
 ## คำสั่งที่ใช้บ่อย
 
 ```bash
-npm test            # ชุดทดสอบ 288 รายการ ต้องผ่านทั้งหมดก่อน commit เสมอ (สร้าง dist/ ให้ด้วย)
-./setup.sh          # ติดตั้งครั้งแรก (Windows ใช้ .\setup.ps1)
-./deploy.sh         # ทดสอบ อัปโหลด และออกเวอร์ชันใหม่ทับ deployment เดิม
+npm test            # Apps Script 289 + Cloudflare 35 รายการ ต้องผ่านทั้งหมดก่อน commit เสมอ (สร้าง dist/ ให้ด้วย)
+npm run test:cf     # เฉพาะ Cloudflare (ต้องใช้ Node 22.5+ เพราะใช้ node:sqlite รุ่นเก่ากว่าจะข้ามเอง)
+./setup.sh          # ติดตั้ง Apps Script ครั้งแรก (Windows ใช้ .\setup.ps1)
+./deploy.sh         # ทดสอบ อัปโหลด Apps Script และออกเวอร์ชันใหม่ทับ deployment เดิม
+npm run deploy:cf   # ทดสอบ แล้วอัปโหลดขึ้น Cloudflare (ต้องมี CLOUDFLARE_API_TOKEN หรือ wrangler login)
 ```
 
-ไม่มี linter และไม่มี build step โค้ดที่เขียนคือโค้ดที่รันจริง
+ไม่มี linter โค้ด `.gs` ที่เขียนคือโค้ดที่รันจริงบน Apps Script ส่วน Cloudflare ใช้ `cloudflare/build.js` รวมไฟล์เดียวกัน
 
 ## กติกาสำคัญของโค้ดฐานนี้
 
@@ -66,6 +70,33 @@ npm test            # ชุดทดสอบ 288 รายการ ต้อ�
 - **`doGet` ฝังข้อมูลตั้งต้นไว้ใน `BOOT.cfg`** หน้าเว็บจึงไม่ต้องเรียก `apiBootstrap` ตอนเปิดหน้า
   ห้ามใส่ข้อมูลลับใน `bootstrapData_()` เพราะทุกคนที่เปิดหน้าเว็บเห็นได้
 
+## Cloudflare (ระบบหลัก) และ Apps Script (ระบบสำรอง)
+
+- **ตรรกะของระบบมีที่เดียวคือ `apps-script/`** `cloudflare/build.js` นำ `.gs` ทั้งหมดมาต่อกันใน `createApp(HOST)`
+  หลัง `cloudflare/prelude.js` (ตัวจำลอง SpreadsheetApp, PropertiesService, CacheService, DriveApp, MailApp, UrlFetchApp, Utilities)
+  และก่อน `cloudflare/overrides.js` (ฟังก์ชันชื่อเดียวกันตัวหลังชนะ) **ห้ามแยกตรรกะไปเขียนซ้ำใน `cloudflare/`**
+  ถ้าต้องทำงานต่างกันจริง ๆ ให้ทับใน `overrides.js` ให้น้อยที่สุด (ตอนนี้มีแค่ที่อยู่ระบบ การติดตั้ง โฟลเดอร์งาน ลิงก์ชีตเก็บถาวร)
+- **ระบบหลักรันแบบ sync บนที่เก็บข้อมูล async ด้วย "IO replay"** ถ้าโค้ดต้องการผลจาก Google (เช่น สถานะโฟลเดอร์ สร้างไฟล์ เรียก Claude)
+  คำสั่งนั้นถูกทิ้งทั้งหมด ไปขอผล แล้วรันใหม่ตั้งแต่ต้นพร้อมผลที่ได้ (`LartsDesign.run` ใน `server.mjs`)
+  ผลคือ **อาร์กิวเมนต์ของการเรียก Drive/UrlFetch ต้องเหมือนเดิมทุกรอบ** ห้ามใส่ uuid เวลา หรือค่าสุ่มในชื่อไฟล์ ชื่อโฟลเดอร์ หรือ payload
+  และห้ามมี side effect นอก Sheets/Properties/Cache/MailApp/`HOST` (ของพวกนี้ถูกทิ้งให้เองเมื่อรันใหม่)
+- **ห้ามมีสถานะระดับโมดูลที่อยู่ข้ามคำสั่ง** นอกจาก `_cache` (ล้างทุกคำสั่งใน `CF_EXPORTS.begin`) เพราะตัวรันบน Cloudflare อยู่ต่อ ไม่ได้เริ่มใหม่ทุกครั้งแบบ Apps Script
+- Cloudflare ทำงานเป็น UTC เสมอ `prelude.js` แทน `Date` ด้วย `BkkDate` (เวลาไทยตายตัว) และ `Utilities.formatDate` รองรับเฉพาะเวลาไทย
+  ชุดทดสอบ Cloudflare รันด้วย `TZ=UTC` เพื่อจับบั๊กเรื่องเขตเวลา
+- **ส่งสำรองทางเดียว Cloudflare → Apps Script** ทุกการเขียนที่ commit แล้วกลายเป็น ops ใน outbox (`rows` `trunc` `prop` `drive` `mail`)
+  ส่งตามลำดับด้วย `deliver()` ลองใหม่เองด้วย alarm Apps Script รับที่ `doPost` → `bridgeBatch_` ใน `15_Bridge.gs`
+  การแก้ในชีตสำรองไม่ย้อนกลับไปที่ Cloudflare (ซ่อมด้วย `/setup` → ส่งข้อมูลทั้งหมดใหม่)
+- อีเมลทั้งหมดส่งจาก Apps Script (`mail` op) ไฟล์อัปโหลดถูกส่งไปพักที่ Drive ก่อนเข้า Durable Object (`apiViaWorker`)
+  แล้วแทนด้วยใบรับ `staged:<id>:<size>:<sig>` ที่เซ็นด้วยรหัสลับคู่ ไบต์ไฟล์จึงไม่เข้าหน่วยความจำของ Durable Object
+- Apps Script ในโหมดสำรอง (`isBackupMode_()`): `doGet` พาไป Cloudflare, `respond_` คืน `code: 'MOVED'`,
+  `workerTick` และ `dailyReminder` ไม่ทำงาน (Cloudflare รันเองด้วย alarm) สลับกลับได้ที่ `?page=failover` (`apiBridgeFailover`)
+  ซึ่งแจ้ง Cloudflare ที่ `/setup/detach` ทันที และ Cloudflare ถามสถานะ Apps Script เองทุก 5 นาที (`checkPeer`)
+- จับคู่ที่ `/setup` (`setupPair`) ต้องใช้บัญชีผู้ดูแลระบบ และรับเฉพาะ deployment ใน `GAS_DEPLOYMENT_ID` ของ `wrangler.jsonc`
+  `APP.VERSION` สองฝั่งต้องตรงกัน **เปลี่ยนโค้ดที่กระทบทั้งสองฝั่งให้เพิ่ม `APP.VERSION`** แล้วอัปเดต Apps Script ก่อน Cloudflare
+- ฟังก์ชันใหม่ที่ไม่ลงท้าย `_` และไม่ขึ้นต้น `api` จะเรียกจาก `google.script.run` ได้ เทสต์จะล้มถ้าไม่อยู่ในรายการที่อนุญาต
+  (`createAdmin_` `setAnthropicApiKey_` เคยเป็นช่องโหว่เพราะไม่มี `_`)
+- `api*` ใหม่ใช้บน Cloudflare ได้เองอัตโนมัติ (`API_NAMES` สร้างจากชื่อฟังก์ชัน) ยกเว้น `apiBridge*` ที่เป็นของ Apps Script เท่านั้น
+
 ## แผนผังไฟล์
 
 | ไฟล์ | หน้าที่ |
@@ -85,6 +116,11 @@ npm test            # ชุดทดสอบ 288 รายการ ต้อ�
 | `12_Library.gs` | คลังไฟล์ CI (ไฟล์บน Drive หรือลิงก์) ให้ทุกคนดาวน์โหลดเอง |
 | `13_Archive.gs` | ย้ายงานที่ปิดแล้วไปสเปรดชีตเก็บถาวร และอ่านกลับแบบอ่านอย่างเดียว |
 | `14_Designers.gs` | รายชื่อผู้ออกแบบ ผู้ขอเลือกผู้ออกแบบ ภาระงาน และคิวงานสาธารณะ (`publicWorkload_`) |
+| `15_Bridge.gs` | ฝั่งสำรอง: `doPost` (pair/export/activate/batch/io/stage/status) หน้าพาไป Cloudflare และหน้า failover |
+| `cloudflare/server.mjs` | Worker + Durable Object: ที่เก็บ SQLite, IO replay, outbox ส่งสำรอง, alarm, หน้า `/setup` |
+| `cloudflare/prelude.js` | ตัวจำลองบริการของ Google บน Cloudflare (`BkkDate`, SHA-256/HMAC, Sheets, Drive ผ่าน `HOST.io`) |
+| `cloudflare/overrides.js` | จุดที่ต่างจาก Apps Script และ `CF_EXPORTS` ที่ `server.mjs` เรียก |
+| `cloudflare/build.js` | สร้าง `cloudflare/dist/app.mjs` และ `assets.mjs` จาก `apps-script/` |
 | `page_App.html` | โครงหน้าเว็บ (มาร์กอัปของทุกหน้าอยู่ที่นี่) |
 | `ui_Style.html` | CSS ทั้งหมด |
 | `ui_Script_Core.html` | `App` (เรียก API สลับหน้า แจ้งเตือน) `Setup` (ตั้งค่าครั้งแรก) และ `Library` (หน้าคลังไฟล์ CI) |
@@ -109,8 +145,11 @@ npm test            # ชุดทดสอบ 288 รายการ ต้อ�
 
 ## การทดสอบ
 
-`tests/mock-gas.js` จำลอง Apps Script ทั้งหมด (Sheets, Drive, Gmail, Properties, Cache, Lock, Triggers, UrlFetch)
+`tests/mock-gas.js` จำลอง Apps Script ทั้งหมด (Sheets, Drive, Gmail, Properties, Cache, Lock, Triggers, UrlFetch, ContentService)
 `tests/run.js` โหลดไฟล์ `.gs` ทุกไฟล์เข้า vm แล้วทดสอบจริง
+`tests/cloudflare.js` รัน `cloudflare/server.mjs` ตัวจริงบน `node:sqlite` คู่กับ Apps Script ตัวจำลองผ่าน `doPost`
+ทุกการเรียกจาก Cloudflare ไป Google ผ่าน `fetch` จำลองที่ส่งต่อให้ `doPost` (`net.down = true` จำลอง Google ล่ม)
+และ `assertSame()` ตรวจผ่าน `/setup/verify` ว่าสำเนาสองฝั่งตรงกันทุกแถว เพิ่มฟีเจอร์ที่เขียนข้อมูลแบบใหม่ให้เพิ่มเทสต์ที่นี่ด้วย
 
 **เพิ่มฟีเจอร์ใหม่ต้องเพิ่มเทสต์เสมอ** โดยเฉพาะกรณีสิทธิ์การเข้าถึงและกรณีข้อมูลผิดรูปแบบ
 ถ้าเทสต์ล้มเหลว ให้ตรวจก่อนว่าเป็นบั๊กจริงหรือเป็นข้อจำกัดของตัวจำลอง อย่าแก้เทสต์ให้ผ่านเฉย ๆ
@@ -126,5 +165,6 @@ npm test            # ชุดทดสอบ 288 รายการ ต้อ�
 ## สิ่งที่ยังไม่ได้ทำ
 
 - ยังไม่เคยรันบน Google จริง (ทดสอบผ่าน mock ทั้งหมด) — รอผู้ใช้ deploy แล้วทดสอบตาม checklist ใน `docs/DEPLOY.md`
+- Cloudflare ทดสอบบน workerd จริง (`wrangler dev`) และในเบราว์เซอร์ครบทุกหน้าแล้ว แต่การจับคู่กับ Apps Script จริงต้องให้ผู้ใช้ทำที่ `/setup`
 - ยังไม่มีการทดสอบ UI อัตโนมัติใน `npm test` (ฝั่ง `.html` ตรวจแค่ syntax และการอ้างอิงฟังก์ชัน)
   การแก้ UI รอบใหญ่ควรเปิดหน้าจริงใน Chromium โดยต่อ `google.script.run` เข้ากับตัวจำลองแล้วลองกดตามขั้นตอน

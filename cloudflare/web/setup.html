@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ตั้งค่าการเชื่อมต่อ | ระบบขอรับบริการออกแบบ</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+  :root { --brand: #ea580c; --ink: #0f172a; --muted: #64748b; --line: #e2e8f0; --ok: #15803d; --bad: #dc2626; --bg: #fff7ed; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif; background: var(--bg); color: var(--ink); }
+  main { max-width: 720px; margin: 0 auto; padding: 28px 16px 60px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 20px; font-size: 14px; }
+  .card { background: #fff; border: 1px solid var(--line); border-radius: 16px; padding: 20px; margin-bottom: 16px; }
+  .card h2 { font-size: 16px; margin: 0 0 12px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+  input { width: 100%; padding: 10px 12px; border: 1px solid #cbd5e1; border-radius: 10px; font-size: 15px; font-family: inherit; }
+  button { background: var(--brand); color: #fff; border: 0; border-radius: 999px; padding: 10px 20px; font-size: 15px; font-family: inherit; cursor: pointer; }
+  button.ghost { background: #fff; color: var(--ink); border: 1px solid var(--line); }
+  button:disabled { opacity: .55; cursor: wait; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .kv { display: grid; grid-template-columns: 160px 1fr; gap: 6px 12px; font-size: 14px; }
+  .kv div:nth-child(odd) { color: var(--muted); }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  .msg { margin-top: 12px; font-size: 14px; white-space: pre-wrap; }
+  .hint { font-size: 13px; color: var(--muted); line-height: 1.6; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 10px; }
+  td, th { text-align: left; padding: 6px 4px; border-bottom: 1px solid var(--line); }
+  a { color: var(--brand); }
+  @media (max-width: 520px) { .kv { grid-template-columns: 1fr; } .kv div:nth-child(odd) { margin-top: 6px; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>ตั้งค่าการเชื่อมต่อ Cloudflare ↔ Apps Script</h1>
+  <p class="sub">Cloudflare เป็นระบบหลัก ทุกการเปลี่ยนแปลงถูกส่งไปสำรองใน Google Sheets ของ Apps Script อัตโนมัติ
+    อีเมลและไฟล์บน Google Drive ยังทำผ่านบัญชีเดิม</p>
+
+  <div class="card">
+    <h2>สถานะ</h2>
+    <div class="kv" id="status"><div>กำลังโหลด…</div><div></div></div>
+    <div class="row"><button class="ghost" onclick="loadStatus()">รีเฟรช</button>
+      <a id="open" href="/" style="display:none"><button>เปิดระบบ</button></a></div>
+  </div>
+
+  <div class="card">
+    <h2 id="pair-title">เชื่อมกับ Apps Script และย้ายข้อมูล</h2>
+    <p class="hint" id="pair-hint">ใส่ลิงก์เว็บแอปของ Apps Script (ลงท้าย /exec) และบัญชีผู้ดูแลระบบเดิม
+      ระบบจะคัดลอกข้อมูลทั้งหมดมาไว้ที่นี่ แล้ว Apps Script จะเปลี่ยนเป็นระบบสำรองที่ส่งลิงก์เดิมมาที่นี่ให้เอง
+      (ต้องอัปเดตโค้ด Apps Script เป็นรุ่นที่มีไฟล์ 15_Bridge ก่อน)</p>
+    <label for="gas">ลิงก์เว็บแอป Apps Script</label>
+    <input id="gas" placeholder="https://script.google.com/a/arts.tu.ac.th/macros/s/…/exec" autocomplete="off">
+    <label for="pe">อีเมลผู้ดูแลระบบ</label>
+    <input id="pe" type="email" autocomplete="username">
+    <label for="pp">รหัสผ่าน</label>
+    <input id="pp" type="password" autocomplete="current-password">
+    <div class="row"><button id="pair-btn" onclick="pair()">เชื่อมและย้ายข้อมูล</button></div>
+    <div class="msg" id="pair-msg"></div>
+  </div>
+
+  <div class="card" id="tools" style="display:none">
+    <h2>ตรวจข้อมูลสำรอง</h2>
+    <p class="hint">ใช้บัญชีผู้ดูแลระบบ "ตรวจเทียบ" ดูว่าข้อมูลสองฝั่งตรงกันทุกชีต ถ้าไม่ตรง (เช่น มีคนแก้ใน Google Sheets เอง)
+      กด "ส่งข้อมูลทั้งหมดไปสำรองใหม่" เพื่อเขียนทับฝั่ง Apps Script ด้วยข้อมูลของระบบหลัก</p>
+    <label for="te">อีเมลผู้ดูแลระบบ</label>
+    <input id="te" type="email" autocomplete="username">
+    <label for="tp">รหัสผ่าน</label>
+    <input id="tp" type="password" autocomplete="current-password">
+    <div class="row">
+      <button id="verify-btn" onclick="verify()">ตรวจเทียบข้อมูล</button>
+      <button id="resync-btn" class="ghost" onclick="resync()">ส่งข้อมูลทั้งหมดไปสำรองใหม่</button>
+    </div>
+    <div class="msg" id="tools-msg"></div>
+    <div id="verify-out"></div>
+  </div>
+</main>
+<script>
+function $(id) { return document.getElementById(id); }
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); }
+function post(path, body) {
+  return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) })
+    .then(function (r) { return r.json(); })
+    .catch(function () { return { ok: false, error: 'เชื่อมต่อไม่สำเร็จ กรุณาลองใหม่' }; });
+}
+function busy(btn, on) { $(btn).disabled = on; }
+function loadStatus() {
+  post('/setup/status').then(function (s) {
+    var rows = [];
+    function add(k, v) { rows.push('<div>' + esc(k) + '</div><div>' + v + '</div>'); }
+    if (!s.ok) { add('ผิดพลาด', '<span class="bad">' + esc(s.error) + '</span>'); $('status').innerHTML = rows.join(''); return; }
+    add('การเชื่อมต่อ', s.detached ? '<span class="bad">Apps Script กลับไปเป็นระบบหลักแล้ว — จับคู่ใหม่ด้านล่างเมื่อพร้อม</span>'
+      : (s.paired ? '<span class="ok">เชื่อมแล้ว</span>' : '<span class="bad">ยังไม่ได้เชื่อม</span>'));
+    if (s.peer) add('Apps Script', esc(s.peer));
+    if (s.pairedAt) add('เชื่อมเมื่อ', esc(s.pairedAt));
+    add('รอส่งไปสำรอง', s.pending ? '<span class="bad">' + s.pending + ' ชุด</span>' : '<span class="ok">ไม่มีค้าง</span>');
+    if (s.lastOk) add('ส่งสำเร็จล่าสุด', esc(s.lastOk));
+    if (s.lastError) add('ผิดพลาดล่าสุด', '<span class="bad">' + esc(s.lastError) + '</span>');
+    if (s.mailErrors) add('อีเมลส่งไม่สำเร็จ', '<span class="bad">' + s.mailErrors + ' ฉบับ (ดูรายละเอียดด้วยการตรวจเทียบ)</span>');
+    add('รุ่นของระบบ', esc(s.version));
+    $('status').innerHTML = rows.join('');
+    $('open').style.display = s.paired && !s.detached ? '' : 'none';
+    $('tools').style.display = s.paired ? '' : 'none';
+    if (s.paired && !s.detached) {
+      $('pair-title').textContent = 'จับคู่ใหม่ (ดึงข้อมูลจาก Apps Script มาทับ)';
+      $('pair-hint').textContent = 'ใช้เมื่อเคยกลับไปใช้ Apps Script เป็นหลัก หรือเปลี่ยนลิงก์ Apps Script เท่านั้น ' +
+        'ข้อมูลบน Cloudflare จะถูกแทนด้วยข้อมูลของ Apps Script ทั้งหมด';
+    }
+  });
+}
+function pair(discardPending) {
+  if (!$('gas').value.trim() || !$('pe').value.trim() || !$('pp').value) { $('pair-msg').textContent = 'กรุณากรอกให้ครบทุกช่อง'; return; }
+  busy('pair-btn', true);
+  $('pair-msg').textContent = 'กำลังเชื่อมและย้ายข้อมูล อาจใช้เวลา 1–2 นาที อย่าปิดหน้านี้…';
+  post('/setup/pair', { gasUrl: $('gas').value.trim(), email: $('pe').value.trim(), password: $('pp').value, discardPending: !!discardPending }).then(function (r) {
+    busy('pair-btn', false);
+    if (!r.ok && r.code === 'PENDING') {
+      $('pair-msg').innerHTML = '<span class="bad">' + esc(r.error) + '</span>';
+      if (confirm(r.error + '\n\nจับคู่ใหม่และใช้ข้อมูลของ Apps Script แทน?')) { pair(true); return; }
+      $('pp').value = '';
+      return;
+    }
+    $('pp').value = '';
+    if (!r.ok) { $('pair-msg').innerHTML = '<span class="bad">' + esc(r.error) + '</span>'; return; }
+    var lines = Object.keys(r.counts || {}).map(function (k) { return k + ' ' + r.counts[k] + ' แถว'; });
+    $('pair-msg').innerHTML = '<span class="ok">ย้ายข้อมูลเรียบร้อย</span>\n' + esc(lines.join(' · '));
+    loadStatus();
+  });
+}
+function creds() { return { email: $('te').value.trim(), password: $('tp').value }; }
+function verify() {
+  busy('verify-btn', true);
+  $('tools-msg').textContent = 'กำลังตรวจเทียบ…';
+  $('verify-out').innerHTML = '';
+  post('/setup/verify', creds()).then(function (r) {
+    busy('verify-btn', false);
+    if (!r.ok) { $('tools-msg').innerHTML = '<span class="bad">' + esc(r.error) + '</span>'; return; }
+    $('tools-msg').innerHTML = r.allSame ? '<span class="ok">ข้อมูลสองฝั่งตรงกันทุกชีต</span>'
+      : '<span class="bad">มีชีตที่ไม่ตรงกัน กด "ส่งข้อมูลทั้งหมดไปสำรองใหม่" เพื่อแก้</span>';
+    var html = '<table><tr><th>ชีต</th><th>Cloudflare</th><th>Apps Script</th><th></th></tr>' +
+      r.sheets.map(function (s) {
+        return '<tr><td>' + esc(s.name) + '</td><td>' + s.cf + '</td><td>' + s.gas + '</td><td>' +
+          (s.same ? '<span class="ok">ตรง</span>' : '<span class="bad">' + esc(s.note || 'ไม่ตรง') + '</span>') + '</td></tr>';
+      }).join('') + '</table>';
+    if (/^https:\/\/docs\.google\.com\//.test(r.sheetUrl || '')) {
+      html += '<p class="hint"><a target="_blank" rel="noopener" href="' + esc(r.sheetUrl) + '">เปิด Google Sheets สำรอง</a></p>';
+    }
+    if (r.mailErrors && r.mailErrors.length) {
+      html += '<p class="hint">อีเมลที่ส่งไม่สำเร็จล่าสุด</p><table>' + r.mailErrors.map(function (m) {
+        return '<tr><td>' + esc(m.at) + '</td><td>' + esc(m.subject) + '</td><td class="bad">' + esc(m.error) + '</td></tr>';
+      }).join('') + '</table>';
+    }
+    $('verify-out').innerHTML = html;
+  });
+}
+function resync() {
+  if (!confirm('เขียนทับข้อมูลในชีตสำรองของ Apps Script ด้วยข้อมูลของระบบหลักทั้งหมด?')) return;
+  busy('resync-btn', true);
+  $('tools-msg').textContent = 'กำลังส่งข้อมูลทั้งหมด…';
+  post('/setup/resync', creds()).then(function (r) {
+    busy('resync-btn', false);
+    $('tools-msg').innerHTML = r.ok ? '<span class="ok">ส่งข้อมูลทั้งหมดเรียบร้อย</span>'
+      : '<span class="bad">' + esc(r.error || ('ยังส่งไม่ครบ ค้าง ' + r.pending + ' ชุด ระบบจะลองส่งต่อเอง')) + '</span>';
+    loadStatus();
+  });
+}
+loadStatus();
+</script>
+</body>
+</html>

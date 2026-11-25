@@ -203,9 +203,19 @@ class MockFile {
     this.trashed = false;
     this.sharing = null;
     this.description = '';
+    this.created = new Date();
   }
   getId() { return this.id; }
   getName() { return this.name; }
+  setName(n) { this.name = String(n); return this; }
+  getDateCreated() { return this.created; }
+  getMimeType() { return this.blob && this.blob.getContentType ? this.blob.getContentType() : 'application/octet-stream'; }
+  moveTo(folder) {
+    for (const p of this.parents) p.files = p.files.filter((f) => f !== this);
+    this.parents = [folder];
+    folder.files.push(this);
+    return this;
+  }
   getUrl() { return 'https://drive.google.com/file/d/' + this.id + '/view'; }
   getSize() { return this.blob && this.blob._buf ? this.blob._buf.length : 0; }
   setSharing(access, permission) { this.sharing = { access, permission }; return this; }
@@ -237,6 +247,12 @@ class MockFolder {
   isTrashed() { return this.trashed; }
   setTrashed(v) { this.trashed = v; return this; }
   setDescription(d) { this.description = d; return this; }
+  setName(n) { this.name = String(n); return this; }
+  getFiles() {
+    const list = this.files.filter((f) => !f.trashed);
+    let i = 0;
+    return { hasNext: () => i < list.length, next: () => list[i++] };
+  }
   createFolder(name) {
     const f = new MockFolder(name, this, this.registry);
     this.folders.push(f);
@@ -322,6 +338,10 @@ function createRuntime(options) {
       const list = state.drive.roots.filter((f) => f.name === name && !f.trashed);
       let i = 0;
       return { hasNext: () => i < list.length, next: () => list[i++] };
+    },
+    getRootFolder() {
+      if (!state.drive.rootFolder) state.drive.rootFolder = new MockFolder('My Drive', null, state.drive);
+      return state.drive.rootFolder;
     }
   };
   // ทำให้ไฟล์ที่สร้างในสเปรดชีตเรียกผ่าน DriveApp.getFileById ได้ด้วย
@@ -427,7 +447,24 @@ function createRuntime(options) {
         };
       }
     }),
-    createHtmlOutputFromFile: (name) => ({ getContent: () => '<!-- ' + name + ' -->' })
+    createHtmlOutputFromFile: (name) => ({ getContent: () => '<!-- ' + name + ' -->' }),
+    createHtmlOutput: (html) => {
+      const out = {
+        _html: String(html || ''),
+        setTitle: () => out, addMetaTag: () => out, setXFrameOptionsMode: () => out,
+        getContent: () => out._html
+      };
+      state.lastHtmlOutput = out;
+      return out;
+    }
+  };
+
+  const ContentService = {
+    MimeType: { JSON: 'JSON', TEXT: 'TEXT' },
+    createTextOutput: (s) => {
+      const out = { _text: String(s), setMimeType: () => out, getContent: () => out._text };
+      return out;
+    }
   };
 
   const Logger = { log: (msg) => state.logs.push(String(msg)) };
@@ -443,7 +480,7 @@ function createRuntime(options) {
     state,
     globals: {
       SpreadsheetApp, DriveApp, PropertiesService, CacheService, LockService,
-      MailApp, ScriptApp, UrlFetchApp, HtmlService, Utilities, Logger, Session,
+      MailApp, ScriptApp, UrlFetchApp, HtmlService, ContentService, Utilities, Logger, Session,
       console: {
         log: (...a) => state.logs.push(a.join(' ')),
         error: (...a) => state.logs.push('ERROR ' + a.join(' ')),

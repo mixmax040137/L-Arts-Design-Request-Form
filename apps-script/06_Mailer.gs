@@ -412,6 +412,10 @@ function sendApprovalToStaffEmail_(req) {
 
 /** สรุปงานค้างประจำวันถึงเจ้าหน้าที่ (ทริกเกอร์ 08:00 น.) */
 function dailyReminder() {
+  // ฟังก์ชันนี้เรียกผ่านเบราว์เซอร์ได้ (ทริกเกอร์ต้องใช้ชื่อสาธารณะ) จึงส่งได้วันละครั้งเท่านั้น กันการส่งซ้ำรบกวนเจ้าหน้าที่
+  if (isBackupMode_()) return; // Cloudflare ส่งสรุปประจำวันแทนแล้ว
+  var sentOn = nowIso_().substring(0, 10);
+  if (getProp_(PROP.DAILY_SENT_ON) === sentOn) return;
   var to = staffRecipients_();
   if (to.length === 0) return;
   var rows = readAll_(SHEET.REQUESTS).filter(function (r) {
@@ -462,4 +466,5 @@ function dailyReminder() {
 
   sendMail_(to, 'สรุปคิวงานออกแบบประจำวัน ' + formatThaiDate_(today),
     emailShell_('คิวงานประจำวัน', APP.ORG, body, adminUrl ? 'เปิดหน้าจัดการคำขอ' : '', adminUrl));
+  setProp_(PROP.DAILY_SENT_ON, sentOn);
 }

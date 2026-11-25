@@ -1,0 +1,21 @@
+{
+  // ระบบขอรับบริการออกแบบ — ระบบหลักบน Cloudflare (Workers แผนฟรีใช้ได้)
+  // Worker ส่งทุกคำขอให้ Durable Object ตัวเดียว ที่เก็บข้อมูลใน SQLite ในตัว
+  "name": "larts-design",
+  "main": "server.mjs",
+  "compatibility_date": "2025-10-01",
+  "workers_dev": true,
+  "preview_urls": false,
+  "durable_objects": {
+    "bindings": [{ "name": "APP", "class_name": "LartsDesign" }]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["LartsDesign"] }
+  ],
+  "observability": { "enabled": true },
+  "vars": {
+    // จับคู่ได้เฉพาะเว็บแอป Apps Script ตัวนี้ (รหัสในลิงก์ /macros/s/<รหัส>/exec) กันคนอื่นจับคู่แย่งก่อน
+    // ถ้าสร้าง deployment ใหม่ใน Apps Script (ไม่ใช่ New version ของตัวเดิม) ต้องแก้ค่านี้แล้ว deploy ใหม่
+    "GAS_DEPLOYMENT_ID": "AKfycbw7OnNz3LGdexxnPhppftcDaqGYxUiJxvw-gW7-ChmfeiA_t_UJkMif8u80Z6p5_tP_"
+  }
+}

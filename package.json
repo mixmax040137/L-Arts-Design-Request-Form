@@ -1,11 +1,14 @@
 {
   "name": "larts-design-request-form",
   "version": "1.0.0",
-  "description": "ระบบขอรับบริการออกแบบสื่อประชาสัมพันธ์ ฝ่ายสื่อสารองค์กร คณะศิลปศาสตร์ มหาวิทยาลัยธรรมศาสตร์ (Google Apps Script + Google Sheets + Google Drive)",
+  "description": "ระบบขอรับบริการออกแบบสื่อประชาสัมพันธ์ ฝ่ายสื่อสารองค์กร คณะศิลปศาสตร์ มหาวิทยาลัยธรรมศาสตร์ (Cloudflare Workers เป็นระบบหลัก + Google Apps Script/Sheets/Drive เป็นระบบสำรองและที่เก็บไฟล์)",
   "private": true,
   "scripts": {
     "bundle": "node scripts/bundle.js",
-    "test": "node scripts/bundle.js && TZ=Asia/Bangkok node tests/run.js"
+    "test": "node scripts/bundle.js && TZ=Asia/Bangkok node tests/run.js && npm run test:cf",
+    "test:gas": "node scripts/bundle.js && TZ=Asia/Bangkok node tests/run.js",
+    "test:cf": "node cloudflare/build.js && TZ=UTC node tests/cloudflare.js",
+    "deploy:cf": "npm test && cd cloudflare && npm install --no-audit --no-fund && npx wrangler deploy"
   },
   "engines": {
     "node": ">=18"

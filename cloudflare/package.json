@@ -1,0 +1,13 @@
+{
+  "name": "larts-design-cloudflare",
+  "private": true,
+  "description": "ระบบขอรับบริการออกแบบบน Cloudflare (Worker + Durable Object แบบ SQLite)",
+  "scripts": {
+    "build": "node build.js",
+    "dev": "node build.js && wrangler dev",
+    "deploy": "node build.js && wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "4.158.0"
+  }
+}

@@ -133,7 +133,7 @@ function claudeOkHandler() {
 function bootstrapApp(options) {
   const app = loadApp(options);
   app.ctx.setupSystem();
-  app.ctx.createAdmin('pr@arts.tu.ac.th', 'ผู้ดูแลระบบ', 'SuperSecret123');
+  app.ctx.createAdmin_('pr@arts.tu.ac.th', 'ผู้ดูแลระบบ', 'SuperSecret123');
   return app;
 }
 
@@ -206,6 +206,24 @@ group('1. การติดตั้งระบบ (setupSystem)');
 /* ==========================================================================
    2. การตรวจสอบข้อมูลของแบบฟอร์ม
    ========================================================================== */
+test('ฟังก์ชันสาธารณะ (เรียกผ่าน google.script.run ได้) มีเฉพาะที่ปลอดภัย', () => {
+  // ทุกฟังก์ชันที่ไม่ลงท้ายด้วย _ ถูกเรียกจากเบราว์เซอร์ของใครก็ได้
+  // ฟังก์ชันที่สร้างบัญชี เปลี่ยนค่าลับ หรือเปลี่ยนโหมดระบบต้องลงท้ายด้วย _ หรือเป็น api* ที่ตรวจสิทธิ์เอง
+  const SAFE = ['doGet', 'doPost', 'include', 'setupSystem', 'showLinks', 'checkSystem',
+    'workerTick', 'workerOnce', 'dailyReminder'];
+  const found = [];
+  for (const file of SERVER_FILES) {
+    const code = fs.readFileSync(path.join(SRC_DIR, file), 'utf8');
+    const re = /^function\s+([A-Za-z0-9]+)\s*\(([^)]*)\)/gm;
+    let m;
+    while ((m = re.exec(code))) {
+      if (/^api[A-Z]/.test(m[1])) continue;
+      if (SAFE.indexOf(m[1]) < 0) found.push(file + ': ' + m[1] + '(' + m[2] + ')');
+    }
+  }
+  assertEqual(found.join(', '), '', 'ฟังก์ชันสาธารณะที่ไม่ได้อยู่ในรายการปลอดภัย');
+});
+
 group('2. การตรวจสอบข้อมูลแบบฟอร์ม (validation)');
 
 {
@@ -766,7 +784,7 @@ group('9. การสรุป Design Brief');
 {
   test('เรียก Claude API ด้วยรูปแบบคำขอที่ถูกต้อง', () => {
     const app = bootstrapApp({ fetchHandler: claudeOkHandler });
-    app.ctx.setAnthropicApiKey('sk-ant-test-key');
+    app.ctx.setAnthropicApiKey_('sk-ant-test-key');
     const created = app.ctx.createRequest_(samplePayload());
     app.ctx.finalizeRequest_(created.jobId);
     const res = app.ctx.generateBrief_(created.jobId, true);
@@ -793,7 +811,7 @@ group('9. การสรุป Design Brief');
 
   test('บันทึกผลสรุปและรายการข้อมูลที่ยังขาด', () => {
     const app = bootstrapApp({ fetchHandler: claudeOkHandler });
-    app.ctx.setAnthropicApiKey('sk-ant-test-key');
+    app.ctx.setAnthropicApiKey_('sk-ant-test-key');
     const created = app.ctx.createRequest_(samplePayload());
     app.ctx.finalizeRequest_(created.jobId);
     app.ctx.generateBrief_(created.jobId, true);
@@ -822,7 +840,7 @@ group('9. การสรุป Design Brief');
     const app = bootstrapApp({
       fetchHandler: () => ({ getResponseCode: () => 500, getContentText: () => 'server error' })
     });
-    app.ctx.setAnthropicApiKey('sk-ant-test-key');
+    app.ctx.setAnthropicApiKey_('sk-ant-test-key');
     const created = app.ctx.createRequest_(samplePayload());
     app.ctx.finalizeRequest_(created.jobId);
     const res = app.ctx.generateBrief_(created.jobId, true);
@@ -839,7 +857,7 @@ group('9. การสรุป Design Brief');
         getContentText: () => '{"error":{"message":"invalid api key"}}'
       })
     });
-    app.ctx.setAnthropicApiKey('sk-ant-bad-key');
+    app.ctx.setAnthropicApiKey_('sk-ant-bad-key');
     const created = app.ctx.createRequest_(samplePayload());
     app.ctx.finalizeRequest_(created.jobId);
     app.ctx.generateBrief_(created.jobId, true);
@@ -857,7 +875,7 @@ group('9. การสรุป Design Brief');
         })
       })
     });
-    app.ctx.setAnthropicApiKey('sk-ant-test-key');
+    app.ctx.setAnthropicApiKey_('sk-ant-test-key');
     const created = app.ctx.createRequest_(samplePayload());
     app.ctx.finalizeRequest_(created.jobId);
     const res = app.ctx.generateBrief_(created.jobId, true);
@@ -866,7 +884,7 @@ group('9. การสรุป Design Brief');
 
   test('ปิดการใช้ AI ในการตั้งค่าแล้วไม่เรียก API', () => {
     const app = bootstrapApp({ fetchHandler: claudeOkHandler });
-    app.ctx.setAnthropicApiKey('sk-ant-test-key');
+    app.ctx.setAnthropicApiKey_('sk-ant-test-key');
     app.ctx.setSetting_('aiEnabled', 'false');
     const created = app.ctx.createRequest_(samplePayload());
     app.ctx.finalizeRequest_(created.jobId);
@@ -883,7 +901,7 @@ group('10. งานเบื้องหลัง (workerTick)');
 {
   test('สรุป Design Brief ของคำขอที่ยืนยันแล้ว', () => {
     const app = bootstrapApp({ fetchHandler: claudeOkHandler });
-    app.ctx.setAnthropicApiKey('sk-ant-test-key');
+    app.ctx.setAnthropicApiKey_('sk-ant-test-key');
     const a = app.ctx.createRequest_(samplePayload());
     app.ctx.finalizeRequest_(a.jobId);
     assertEqual(app.ctx.getRequest_(a.jobId).briefStatus, 'PENDING');
@@ -893,7 +911,7 @@ group('10. งานเบื้องหลัง (workerTick)');
 
   test('ไม่สรุปคำขอที่ยังไม่ยืนยัน', () => {
     const app = bootstrapApp({ fetchHandler: claudeOkHandler });
-    app.ctx.setAnthropicApiKey('sk-ant-test-key');
+    app.ctx.setAnthropicApiKey_('sk-ant-test-key');
     const a = app.ctx.createRequest_(samplePayload());
     app.ctx.workerTick();
     assertEqual(app.ctx.getRequest_(a.jobId).briefStatus, 'PENDING', 'ต้องรอการยืนยันก่อน');
@@ -915,7 +933,7 @@ group('10. งานเบื้องหลัง (workerTick)');
 
   test('ประมวลผลได้สูงสุด 3 ใบต่อรอบ กันเวลาทำงานเกินโควตา', () => {
     const app = bootstrapApp({ fetchHandler: claudeOkHandler });
-    app.ctx.setAnthropicApiKey('sk-ant-test-key');
+    app.ctx.setAnthropicApiKey_('sk-ant-test-key');
     for (let i = 0; i < 7; i++) {
       const job = app.ctx.createRequest_(samplePayload());
       app.ctx.finalizeRequest_(job.jobId);
@@ -1460,7 +1478,7 @@ group('16. ติดตั้งอัตโนมัติเมื่อเป
     const app = loadApp();
     app.ctx.doGet({ parameter: {} });
     assertEqual(app.ctx.apiBootstrap().data.needsFirstAdmin, true);
-    app.ctx.createAdmin('pr@arts.tu.ac.th', 'ผู้ดูแล', 'SuperSecret123');
+    app.ctx.createAdmin_('pr@arts.tu.ac.th', 'ผู้ดูแล', 'SuperSecret123');
     assertEqual(app.ctx.apiBootstrap().data.needsFirstAdmin, false);
   });
 
@@ -1519,7 +1537,7 @@ group('16. ติดตั้งอัตโนมัติเมื่อเป
     const app = loadApp();
     app.ctx.doGet({ parameter: {} });
     assert(!!app.state.props.SETUP_KEY);
-    app.ctx.createAdmin('pr@arts.tu.ac.th', 'ผู้ดูแล', 'SuperSecret123');
+    app.ctx.createAdmin_('pr@arts.tu.ac.th', 'ผู้ดูแล', 'SuperSecret123');
     assertEqual(app.state.props.SETUP_KEY, undefined);
   });
 
@@ -1599,8 +1617,8 @@ group('17. ไฟล์รวมสำหรับติดตั้งด้ว
   test('ไฟล์รวมทำงานได้ครบวงจรเหมือนไฟล์แยก', () => {
     const app = loadBundledApp({ fetchHandler: claudeOkHandler });
     app.ctx.setupSystem();
-    app.ctx.createAdmin('pr@arts.tu.ac.th', 'ผู้ดูแลระบบ', 'SuperSecret123');
-    app.ctx.setAnthropicApiKey('sk-ant-test-key');
+    app.ctx.createAdmin_('pr@arts.tu.ac.th', 'ผู้ดูแลระบบ', 'SuperSecret123');
+    app.ctx.setAnthropicApiKey_('sk-ant-test-key');
 
     const created = app.ctx.createRequest_(samplePayload());
     assert(/^DR-\d{4}-0001$/.test(created.jobId), 'ต้องออกเลขที่คำขอได้');
@@ -1776,7 +1794,7 @@ group('19. URL ของเว็บแอปในลิงก์อีเม�
   test('ลิงก์ติดตามในอีเมลใช้ /exec เสมอแม้ส่งจากงานเบื้องหลัง', () => {
     const app = loadApp({ webAppUrl: EXEC });
     app.ctx.doGet({ parameter: {} });
-    app.ctx.createAdmin('pr@arts.tu.ac.th', 'ผู้ดูแล', 'SuperSecret123');
+    app.ctx.createAdmin_('pr@arts.tu.ac.th', 'ผู้ดูแล', 'SuperSecret123');
 
     const created = app.ctx.createRequest_(samplePayload());
     const row = app.ctx.getRequest_(created.jobId);
@@ -1800,7 +1818,7 @@ group('19. URL ของเว็บแอปในลิงก์อีเม�
   test('showLinks รายงานลิงก์และสถานะระบบได้', () => {
     const app = loadApp({ webAppUrl: EXEC });
     app.ctx.doGet({ parameter: {} });
-    app.ctx.createAdmin('pr@arts.tu.ac.th', 'ผู้ดูแล', 'SuperSecret123');
+    app.ctx.createAdmin_('pr@arts.tu.ac.th', 'ผู้ดูแล', 'SuperSecret123');
     const res = app.ctx.showLinks();
     assertEqual(res.webAppUrl, EXEC);
     const log = app.state.logs.join('\n');
@@ -2407,7 +2425,7 @@ group('23. แก้บั๊กรอบตรวจทั้งระบบ');
       return claudeOkHandler();
     };
     app = bootstrapApp({ fetchHandler: handler });
-    app.ctx.setAnthropicApiKey('sk-ant-test-key');
+    app.ctx.setAnthropicApiKey_('sk-ant-test-key');
     const a = app.ctx.createRequest_(samplePayload({ projectName: 'งานใบแรก' }));
     const b = app.ctx.createRequest_(samplePayload({ projectName: 'งานใบที่สอง' }));
     const c = app.ctx.createRequest_(samplePayload({ projectName: 'งานใบที่สาม' }));
@@ -2419,7 +2437,7 @@ group('23. แก้บั๊กรอบตรวจทั้งระบบ');
 
   test('งานเบื้องหลังไม่ทำงานซ้อนกันเมื่อรอบก่อนยังไม่เสร็จ', () => {
     const app = bootstrapApp({ fetchHandler: claudeOkHandler });
-    app.ctx.setAnthropicApiKey('sk-ant-test-key');
+    app.ctx.setAnthropicApiKey_('sk-ant-test-key');
     const job = app.ctx.createRequest_(samplePayload());
     app.ctx.finalizeRequest_(job.jobId);
     app.ctx.CacheService.getScriptCache().put('worker:running', '1', 300);
@@ -2762,6 +2780,11 @@ group('27. กำหนดส่งร่างแรก (SLA)');
     app.ctx.dailyReminder();
     const mail = app.state.outbox[app.state.outbox.length - 1];
     assert(mail.htmlBody.indexOf('เกินกำหนดส่งร่างแรก') >= 0, 'อีเมลสรุปต้องมีหัวข้อร่างแรกเกินกำหนด');
+    // ใครก็เรียก dailyReminder ผ่านเบราว์เซอร์ได้ จึงต้องส่งได้วันละครั้งเท่านั้น
+    const sent = app.state.outbox.length;
+    app.ctx.dailyReminder();
+    app.ctx.dailyReminder();
+    assertEqual(app.state.outbox.length, sent, 'เรียกซ้ำในวันเดียวกันต้องไม่ส่งซ้ำ');
   });
 
   test('ระหว่างรอข้อมูลเพิ่มเติมไม่นับ และเริ่มนับใหม่เมื่อผู้ขอตอบ', () => {

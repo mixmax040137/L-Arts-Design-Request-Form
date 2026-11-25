@@ -4,7 +4,10 @@
  * ขั้นตอนใช้งาน (ทำครั้งเดียวด้วยบัญชี pr@arts.tu.ac.th):
  *   1) เปิด Apps Script แล้วเลือกฟังก์ชัน setupSystem แล้วกด Run
  *   2) อนุญาตสิทธิ์ที่ระบบร้องขอ
- *   3) เรียก createAdmin('pr@arts.tu.ac.th', 'ชื่อผู้ดูแล', 'รหัสผ่าน') เพื่อสร้างบัญชีเจ้าหน้าที่
+ *   3) เปิดเว็บแอปแล้วสร้างบัญชีผู้ดูแลระบบด้วยรหัสติดตั้งที่ระบบส่งไปทางอีเมล
+ *
+ * ความปลอดภัย: ฟังก์ชันที่ไม่ได้ลงท้ายด้วย _ ถูกเรียกจากเบราว์เซอร์ผ่าน google.script.run ได้เสมอ
+ * ฟังก์ชันที่สร้างบัญชีหรือเปลี่ยนค่าลับจึงต้องลงท้ายด้วย _ (มีเทสต์ตรวจรายชื่อฟังก์ชันสาธารณะ)
  *   4) Deploy เป็น Web app (Execute as: Me, Who has access: Anyone)
  */
 
@@ -317,8 +320,12 @@ function installTriggers_() {
     .inTimezone(APP.TIMEZONE).create();
 }
 
-/** สร้างบัญชีเจ้าหน้าที่ (เรียกจาก Apps Script editor) */
-function createAdmin(email, name, password) {
+/**
+ * สร้างบัญชีผู้ดูแลระบบ หรือตั้งรหัสผ่านใหม่ (ใช้ภายในเท่านั้น)
+ * ห้ามเปลี่ยนเป็นฟังก์ชันสาธารณะ เพราะใครก็เรียกผ่าน google.script.run แล้วยึดระบบได้
+ * กู้รหัสผ่านจากตัวแก้ไข: เพิ่มฟังก์ชันชั่วคราวที่เรียก createAdmin_(...) รัน แล้วลบทิ้งทันที
+ */
+function createAdmin_(email, name, password) {
   var mail = str_(email).toLowerCase();
   if (!isValidEmail_(mail)) throw appError_('อีเมลไม่ถูกต้อง');
   if (str_(password).length < 8) throw appError_('รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร');
@@ -352,8 +359,8 @@ function createAdmin(email, name, password) {
   return { created: true, email: mail };
 }
 
-/** ตั้งค่า API key ของ Claude สำหรับสรุป Design Brief */
-function setAnthropicApiKey(key) {
+/** ตั้งค่า API key ของ Claude สำหรับสรุป Design Brief (ใช้ภายใน หน้าตั้งค่าเรียกผ่าน apiAdminSetApiKey) */
+function setAnthropicApiKey_(key) {
   var k = str_(key);
   if (!k) {
     props_().deleteProperty(PROP.ANTHROPIC_API_KEY);

@@ -26,6 +26,11 @@ function jsonForHtml_(obj) {
 function doGet(e) {
   var params = (e && e.parameter) ? e.parameter : {};
   var page = sanitizeParam_(params.page, /[^a-z]/g, 20);
+
+  // เชื่อมกับ Cloudflare (15_Bridge.gs): ลิงก์เดิมพาไประบบหลัก และมีหน้ากลับมาใช้ Apps Script
+  if (page === 'failover') return bridgeFailoverPage_();
+  if (isBackupMode_()) return bridgeRedirectPage_(params);
+
   var allowedPages = ['home', 'form', 'track', 'login', 'admin', 'setup', 'resources'];
   if (allowedPages.indexOf(page) < 0) page = 'home';
 
@@ -75,6 +80,13 @@ function include(filename) {
 
 /** ห่อผลลัพธ์ให้เป็นรูปแบบเดียวกัน และแปลง error เป็นข้อความภาษาไทย */
 function respond_(fn) {
+  // Cloudflare เป็นระบบหลักอยู่: หน้าเว็บ Apps Script ที่เปิดค้างไว้ต้องไม่เขียนข้อมูลแยกออกไป
+  if (isBackupMode_()) {
+    return {
+      ok: false, code: 'MOVED', moved: bridgeCfUrl_(),
+      error: 'ระบบย้ายไปที่ ' + bridgeCfUrl_() + ' แล้ว กรุณารีเฟรชหน้านี้หรือเปิดลิงก์ใหม่'
+    };
+  }
   try {
     return { ok: true, data: fn() };
   } catch (err) {

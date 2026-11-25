@@ -11,7 +11,7 @@ var APP = {
   SHORT_NAME: 'L-Arts Design Request',
   ORG: 'ฝ่ายสื่อสารองค์กร คณะศิลปศาสตร์ มหาวิทยาลัยธรรมศาสตร์',
   ORG_SHORT: 'คณะศิลปศาสตร์ มธ.',
-  VERSION: '1.0.0',
+  VERSION: '1.1.0',
   TIMEZONE: 'Asia/Bangkok',
   ROOT_FOLDER_NAME: 'Design Request System'
 };
@@ -29,7 +29,8 @@ var PROP = {
   OWNER_EMAIL: 'OWNER_EMAIL',
   WEBAPP_URL: 'WEBAPP_URL',
   RESOURCE_FOLDER_ID: 'RESOURCE_FOLDER_ID',
-  ARCHIVE_SPREADSHEET_ID: 'ARCHIVE_SPREADSHEET_ID'
+  ARCHIVE_SPREADSHEET_ID: 'ARCHIVE_SPREADSHEET_ID',
+  DAILY_SENT_ON: 'DAILY_SENT_ON'
 };
 
 /** ชื่อชีตทั้งหมด */

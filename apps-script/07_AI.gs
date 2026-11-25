@@ -277,6 +277,7 @@ function workerOnce() {
  *  2) สรุป Design Brief ของคำขอที่ยังไม่ได้สรุป
  */
 function workerTick() {
+  if (isBackupMode_()) return; // Cloudflare ทำงานเบื้องหลังแทนแล้ว
   // ทริกเกอร์ทุก 5 นาทีกับทริกเกอร์ครั้งเดียวหลังมีคำขอใหม่อาจทำงานชนกัน
   // ถ้ารอบก่อนยังไม่เสร็จให้ข้ามไป ไม่เช่นนั้นจะเรียก AI สรุปงานใบเดียวกันซ้ำ
   var cache = CacheService.getScriptCache();
