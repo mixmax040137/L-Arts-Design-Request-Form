@@ -4,7 +4,7 @@
 
 ระบบรับคำขอออกแบบสื่อประชาสัมพันธ์แบบช่องทางเดียว (Single Entry Point) พร้อมออกเลขที่งาน
 ทะเบียนคิวกลาง ระบบติดตามสถานะที่ผู้ขอตรวจสอบได้เอง และแดชบอร์ดสรุปผลการให้บริการ
-ระบบหลักทำงานบน **Cloudflare Workers** (เร็ว ตอบในระดับมิลลิวินาที) ที่ <https://larts-design.mcorner-ap.workers.dev>
+ระบบหลักทำงานบน **Cloudflare Workers** (เร็ว ตอบในระดับมิลลิวินาที) ที่ <https://design.tu-arts.workers.dev>
 โดยมี **Google Apps Script** เป็นระบบสำรองอัตโนมัติ ได้สำเนาข้อมูลทุกแถวใน **Google Sheets** ทันที
 และเป็นคนเก็บไฟล์งานบน **Google Drive** กับส่งอีเมลจากบัญชี `pr@arts.tu.ac.th` ไม่ต้องเช่าเซิร์ฟเวอร์
 โค้ดของระบบมีชุดเดียว (`apps-script/`) ใช้ได้ทั้งสองที่ ถ้า Cloudflare มีปัญหาสลับกลับไปใช้ Apps Script ได้ทันที
@@ -61,7 +61,7 @@
 ถ้าใช้ Terminal ไม่ได้ ให้คัดลอกไฟล์ในโฟลเดอร์ `dist/` ลงตัวแก้ไข Apps Script แทน (8 ไฟล์)
 ดูขั้นตอนละเอียดที่ [docs/DEPLOY.md](docs/DEPLOY.md) หัวข้อ *วิธี ข*
 
-จากนั้นเปิด <https://larts-design.mcorner-ap.workers.dev/setup> แล้วจับคู่กับเว็บแอป Apps Script
+จากนั้นเปิด <https://design.tu-arts.workers.dev/setup> แล้วจับคู่กับเว็บแอป Apps Script
 (ลิงก์ `/exec` + บัญชีผู้ดูแลระบบ) ระบบย้ายข้อมูลทั้งหมดมาที่ Cloudflare และตั้ง Apps Script เป็นระบบสำรองให้เอง
 ดูหัวข้อ *ระบบหลักบน Cloudflare* ใน [docs/DEPLOY.md](docs/DEPLOY.md)
 

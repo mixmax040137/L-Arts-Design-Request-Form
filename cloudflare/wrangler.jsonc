@@ -1,7 +1,10 @@
 {
   // ระบบขอรับบริการออกแบบ — ระบบหลักบน Cloudflare (Workers แผนฟรีใช้ได้)
   // Worker ส่งทุกคำขอให้ Durable Object ตัวเดียว ที่เก็บข้อมูลใน SQLite ในตัว
-  "name": "larts-design",
+  // บัญชี Cloudflare ของคณะ (pr@arts.tu.ac.th) ลิงก์ระบบ = https://design.tu-arts.workers.dev
+  // ล็อกรหัสบัญชีไว้ กัน deploy ผิดไปลงบัญชีส่วนตัวของผู้ที่เป็นสมาชิกหลายบัญชี
+  "account_id": "d0f8c2bc34c6213559bc7383344d1f1b",
+  "name": "design",
   "main": "server.mjs",
   "compatibility_date": "2025-10-01",
   "workers_dev": true,

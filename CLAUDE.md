@@ -7,7 +7,7 @@
 ระบบขอรับบริการออกแบบสื่อประชาสัมพันธ์ ของฝ่ายสื่อสารองค์กร คณะศิลปศาสตร์ มหาวิทยาลัยธรรมศาสตร์
 เขียนเป็น **Google Apps Script** (Google Sheets เป็นฐานข้อมูล Google Drive เก็บไฟล์งาน บัญชี `pr@arts.tu.ac.th`)
 แต่ **ระบบหลักรันบน Cloudflare** (`cloudflare/` Worker + Durable Object แบบ SQLite แผนฟรี)
-ที่ https://larts-design.mcorner-ap.workers.dev ด้วยโค้ด `.gs` ชุดเดียวกัน ส่วน Apps Script เป็น **ระบบสำรองอัตโนมัติ**
+ที่ https://design.tu-arts.workers.dev ด้วยโค้ด `.gs` ชุดเดียวกัน ส่วน Apps Script เป็น **ระบบสำรองอัตโนมัติ**
 ที่รับสำเนาข้อมูลทุกแถว และเป็นคนทำงานที่ต้องใช้ Google (Drive อีเมล) ให้ ดูหัวข้อ *Cloudflare* ด้านล่าง
 
 ที่มาของความต้องการอยู่ใน Workshop Canvas ของผู้ใช้ ปัญหาหลักที่ระบบต้องแก้คือ

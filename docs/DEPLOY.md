@@ -14,7 +14,7 @@
               │
               ▼
    Cloudflare (ระบบหลัก)              ← โค้ดชุดเดียวกับ apps-script/ + cloudflare/
-   https://larts-design.mcorner-ap.workers.dev
+   https://design.tu-arts.workers.dev
    ฐานข้อมูลหลักอยู่ใน SQLite ของ Durable Object ตอบเร็วระดับมิลลิวินาที
               │  ส่งทุกการเปลี่ยนแปลงไปสำรองอัตโนมัติ (ทางเดียว ตามลำดับ ลองใหม่เองเมื่อ Google ล่ม)
               ▼
@@ -328,14 +328,15 @@ URL ที่ลงท้ายด้วย `/dev` คือเวอร์ช�
 npm run deploy:cf              # ทดสอบทั้งหมด แล้วอัปโหลดขึ้น Cloudflare
 ```
 
-ต้องตั้ง `CLOUDFLARE_API_TOKEN` (สิทธิ์ *Edit Cloudflare Workers*) หรือรัน `npx wrangler login` ในโฟลเดอร์ `cloudflare/` ก่อนหนึ่งครั้ง
+ระบบอยู่ในบัญชี Cloudflare ของคณะ (**pr@arts.tu.ac.th**) รหัสบัญชีล็อกไว้ใน `cloudflare/wrangler.jsonc` แล้ว
+ต้องตั้ง `CLOUDFLARE_API_TOKEN` (สิทธิ์ *Edit Cloudflare Workers* ที่ครอบคลุมบัญชีของคณะ) หรือรัน `npx wrangler login` ด้วยบัญชีที่เป็นสมาชิกของบัญชีคณะ ในโฟลเดอร์ `cloudflare/` ก่อนหนึ่งครั้ง
 ข้อมูลบน Cloudflare ไม่หายเมื่ออัปโหลดโค้ดใหม่ ไม่ต้องจับคู่ใหม่
 
 ---
 
 ## ระบบหลักบน Cloudflare
 
-ระบบหลักอยู่ที่ **<https://larts-design.mcorner-ap.workers.dev>** ใช้โค้ดชุดเดียวกับ Apps Script ทุกบรรทัด
+ระบบหลักอยู่ที่ **<https://design.tu-arts.workers.dev>** ใช้โค้ดชุดเดียวกับ Apps Script ทุกบรรทัด
 (`cloudflare/build.js` นำไฟล์ `.gs` และ `.html` ทั้งหมดไปรวมกับตัวจำลองบริการของ Google ใน `cloudflare/prelude.js`)
 จึงทำงานเหมือนกันทุกอย่าง แต่เร็วกว่ามากเพราะไม่ต้องรอ Google เปิดสเปรดชีตทุกครั้ง
 
@@ -343,11 +344,11 @@ npm run deploy:cf              # ทดสอบทั้งหมด แล้�
 
 1. อัปเดต Apps Script ให้เป็นโค้ดรุ่นล่าสุด (มีไฟล์ `15_Bridge.gs` รวมอยู่ใน `dist/Code.gs`)
    แล้ว **Deploy → Manage deployments → ดินสอ → New version → Deploy**
-2. เปิด <https://larts-design.mcorner-ap.workers.dev/setup>
+2. เปิด <https://design.tu-arts.workers.dev/setup>
 3. กรอก **ลิงก์เว็บแอป Apps Script** (ลงท้ายด้วย `/exec`) อีเมลและรหัสผ่าน **ผู้ดูแลระบบ** แล้วกด **เชื่อมและย้ายข้อมูล**
 4. ระบบย้ายข้อมูลทั้งหมด (คำขอ ผู้ใช้ ผู้ออกแบบ ตั้งค่า ไฟล์ CI งานเก็บถาวร) มาที่ Cloudflare ใช้เวลาไม่เกิน 1–2 นาที
 5. เสร็จแล้ว Apps Script เปลี่ยนเป็นระบบสำรองทันที คนที่เปิดลิงก์ Apps Script เดิมจะถูกพามาที่ Cloudflare เอง
-6. แจกลิงก์ใหม่ `https://larts-design.mcorner-ap.workers.dev` ให้ผู้ขอรับบริการ และแจ้งเจ้าหน้าที่ให้เข้าสู่ระบบใหม่หนึ่งครั้ง
+6. แจกลิงก์ใหม่ `https://design.tu-arts.workers.dev` ให้ผู้ขอรับบริการ และแจ้งเจ้าหน้าที่ให้เข้าสู่ระบบใหม่หนึ่งครั้ง
    (รหัสผ่านเดิมใช้ได้ แต่เบราว์เซอร์จำการเข้าสู่ระบบแยกตามโดเมน)
 
 > Cloudflare รับจับคู่เฉพาะเว็บแอป Apps Script ของคณะ (รหัส deployment ใน `cloudflare/wrangler.jsonc` ค่า `GAS_DEPLOYMENT_ID`)
