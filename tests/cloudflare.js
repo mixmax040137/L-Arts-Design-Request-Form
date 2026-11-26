@@ -813,6 +813,104 @@ test('ส่งไปสำรองทีละไม่เกิน 20 ชุ�
   eq(gas.state.props.BULK_24, '399');
 });
 
+test('ใบรับไฟล์ใช้ได้ครั้งเดียว: นำใบรับเดิมไปแนบกับงานอื่นไม่ได้ และไฟล์เดิมยังอยู่ที่งานแรก', async () => {
+  const { cf, gas } = await paired();
+  const a = (await cf.api('apiSubmitRequest', payload({ projectName: 'งาน ก', requesterEmail: 'a@arts.tu.ac.th' }))).data;
+  const b = (await cf.api('apiSubmitRequest', payload({ projectName: 'งาน ข', requesterEmail: 'b@arts.tu.ac.th' }))).data;
+  const file = fileArg('ใบเดียว.pdf', 'only-once');
+  const first = await directUpload(cf, gas, 'apiUploadFile', [a.jobId, a.trackToken, file]);
+  eq(first.res.ok, true, first.res.error);
+  const receipt = file.dataB64;
+  assert(/^staged:/.test(receipt));
+  const replay = await cf.api('apiUploadFile', b.jobId, b.trackToken, { fileName: 'x.pdf', mimeType: 'application/pdf', dataB64: receipt });
+  eq(replay.ok, false, 'ใช้ใบรับซ้ำไม่ได้');
+  assert(/ถูกแนบไปแล้ว/.test(replay.error), replay.error);
+  await cf.obj.deliver();
+  const reqA = gas.ctx.getRequest_(a.jobId);
+  const reqB = gas.ctx.getRequest_(b.jobId);
+  eq(gas.state.drive.folders[reqA.folderId].files.filter((f) => !f.trashed).length, 1, 'ไฟล์ยังอยู่ในโฟลเดอร์งาน ก');
+  eq(gas.state.drive.folders[reqB.folderId].files.length, 0, 'ไม่มีไฟล์ถูกดึงไปงาน ข');
+  await assertSame(cf, 'หลังใช้ใบรับซ้ำ');
+});
+
+test('ทุกคำสั่งที่รับไฟล์ใช้ใบอนุญาตได้: ไฟล์ส่งมอบ ไฟล์ตอบข้อมูลเพิ่มเติม และคลังไฟล์ CI', async () => {
+  const { cf, gas } = await paired();
+  const t = (await cf.api('apiLogin', 'pr@arts.tu.ac.th', 'SuperSecret123')).data.token;
+  const sub = (await cf.api('apiSubmitRequest', payload({ projectName: 'ครบทุกช่องทาง' }))).data;
+  eq((await cf.api('apiFinalizeRequest', sub.jobId, sub.trackToken)).ok, true);
+  // ไฟล์ส่งมอบของเจ้าหน้าที่
+  const fin = await directUpload(cf, gas, 'apiAdminUploadFile', [t, sub.jobId, fileArg('งานจริง.pdf', 'final-bytes'), 'final']);
+  eq(fin.ticket.ok, true, fin.ticket.error);
+  eq(fin.res.ok, true, fin.res.error);
+  // ผู้ขอแนบไฟล์ตอนรอข้อมูลเพิ่มเติม
+  const info = await cf.api('apiAdminChangeStatus', t, sub.jobId, 'INFO_NEEDED', { detail: 'ขอไฟล์โลโก้โครงการ', notify: false });
+  eq(info.ok, true, info.error);
+  const rep = await directUpload(cf, gas, 'apiInfoUpload', [sub.jobId, '', sub.trackToken, fileArg('โลโก้.png', 'logo-bytes')]);
+  eq(rep.ticket.ok, true, rep.ticket.error);
+  eq(rep.res.ok, true, rep.res.error);
+  // คลังไฟล์ CI
+  const ci = await directUpload(cf, gas, 'apiAdminSaveResource', [t, { title: 'โลโก้คณะศิลปศาสตร์', kind: 'file',
+    file: { fileName: 'logo-arts.png', mimeType: 'image/png', dataB64: Buffer.from('ci-logo').toString('base64') } }]);
+  eq(ci.ticket.ok, true, ci.ticket.error);
+  eq(ci.res.ok, true, ci.res.error);
+  const lib = await cf.api('apiResources');
+  eq(lib.data.items.length, 1, 'มีไฟล์ในคลัง CI');
+  assert(/^https:\/\/drive\.google\.com\//.test(lib.data.items[0].url), 'ดาวน์โหลดผ่านลิงก์ Drive');
+  // คนที่ไม่มีสิทธิ์ขอใบอนุญาตคลัง CI ไม่ได้
+  const anon = await cf.post('/api/ticket', { fn: 'apiAdminSaveResource', args: ['bad', { title: 'ปลอม', kind: 'file', file: { fileName: 'a.png', mimeType: 'image/png', dataB64: 'precheck:5' } }] });
+  eq(anon.ok, false);
+  await cf.obj.deliver();
+  const files = gas.state.drive.folders[gas.ctx.getRequest_(sub.jobId).folderId].files.filter((f) => !f.trashed);
+  eq(files.length, 2, 'ไฟล์ส่งมอบและไฟล์ตอบข้อมูลอยู่ในโฟลเดอร์งาน');
+  await assertSame(cf, 'หลังอัปโหลดทุกช่องทาง');
+});
+
+test('จำกัดใบอนุญาตต่องานต่อชั่วโมง กันการส่งไฟล์ท่วม Drive ของคณะ', async () => {
+  const { cf } = await paired();
+  const sub = (await cf.api('apiSubmitRequest', payload())).data;
+  const ask = () => cf.post('/api/ticket', { fn: 'apiUploadFile', args: [sub.jobId, sub.trackToken, { fileName: 'a.pdf', mimeType: 'application/pdf', dataB64: 'precheck:10' }] });
+  let last;
+  for (let i = 0; i < 60; i++) { last = await ask(); if (!last.ok) break; }
+  eq(last.ok, true, 'ภายในโควตาได้ครบ ' + (last.error || ''));
+  const over = await ask();
+  eq(over.ok, false, 'เกินโควตา');
+  assert(/ถี่เกินไป/.test(over.error), over.error);
+  const other = (await cf.api('apiSubmitRequest', payload({ requesterEmail: 'other@arts.tu.ac.th' }))).data;
+  const ok = await cf.post('/api/ticket', { fn: 'apiUploadFile', args: [other.jobId, other.trackToken, { fileName: 'a.pdf', mimeType: 'application/pdf', dataB64: 'precheck:10' }] });
+  eq(ok.ok, true, 'งานอื่นไม่โดนโควตาด้วย');
+});
+
+test('ตรวจเทียบระหว่างยังทยอยส่ง บอกให้รอ ไม่รายงานว่าข้อมูลไม่ตรง', async () => {
+  const { cf } = await paired();
+  for (let i = 0; i < 25; i++) {
+    const ops = [];
+    for (let j = 0; j < 400; j++) ops.push({ t: 'prop', k: 'BULK_' + i, v: String(j) });
+    cf.obj.store.sql.exec('INSERT INTO outbox (ops, n, at) VALUES (?, ?, ?)', JSON.stringify(ops), ops.length, Date.now());
+  }
+  const v = await cf.post('/setup/verify', { email: 'pr@arts.tu.ac.th', password: 'SuperSecret123' });
+  eq(v.ok, false);
+  assert(/กำลังทยอยส่ง/.test(v.error), v.error);
+  // 25 ชุด ส่งไป 20 เหลือ 5 (บวกเวลาเข้าสู่ระบบของผู้ดูแลระบบอีก 1 ชุดถ้านาทีเปลี่ยน)
+  assert(v.pending >= 5 && v.pending <= 6, 'ยังค้าง ' + v.pending);
+  await cf.obj.deliver();
+  eq((await cf.post('/setup/verify', { email: 'pr@arts.tu.ac.th', password: 'SuperSecret123' })).ok, true, 'ส่งครบแล้วตรวจเทียบได้');
+});
+
+test('"/api/" (มี / ท้าย) ผ่านการตรวจของ Worker เหมือน "/api"', async () => {
+  const { cf, gas } = await paired();
+  const sub = (await cf.api('apiSubmitRequest', payload())).data;
+  const files0 = driveCount(gas);
+  const callsBefore = net.calls.length;
+  const res = await cf.req('POST', '/api/', { fn: 'apiUploadFile', args: [sub.jobId, wrongTok(sub.trackToken), fileArg('a.pdf', 'no')] });
+  const r = await res.json();
+  eq(r.ok, false);
+  eq(net.calls.slice(callsBefore).filter((c) => c === 'stage').length, 0);
+  eq(driveCount(gas), files0);
+  const okRes = await (await cf.req('POST', '/api/', { fn: 'apiUploadFile', args: [sub.jobId, sub.trackToken, fileArg('a.pdf', 'yes')] })).json();
+  eq(okRes.ok, true, okRes.error);
+  eq(net.calls.slice(callsBefore).filter((c) => c === 'stage').length, 1, 'ไฟล์ผ่านการพักของ Worker ตามปกติ');
+});
+
 group('7. หน้าเว็บและความปลอดภัย');
 
 test('หน้าแรกฝังข้อมูลตั้งต้น และใช้ google.script.run ผ่าน /api', async () => {

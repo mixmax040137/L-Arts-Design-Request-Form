@@ -384,7 +384,8 @@ function createRuntime(options) {
   };
 
   const LockService = {
-    getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {}, waitLock: () => {} })
+    getScriptLock: () => ({ tryLock: () => true, releaseLock: () => {}, waitLock: () => {} }),
+    getUserLock: () => ({ tryLock: () => true, releaseLock: () => {}, waitLock: () => {} })
   };
 
   const MailApp = {

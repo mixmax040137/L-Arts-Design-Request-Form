@@ -671,7 +671,7 @@ Deploy → **Manage deployments** → ไอคอนดินสอ → ตร�
 โครงการมีชุดทดสอบอัตโนมัติที่รันได้บนเครื่องโดยไม่ต้องแตะระบบจริง
 
 ```bash
-npm test          # ทั้งหมด: Apps Script 289 รายการ + Cloudflare 40 รายการ
+npm test          # ทั้งหมด: Apps Script 289 รายการ + Cloudflare 45 รายการ
 npm run test:gas  # เฉพาะ Apps Script
 npm run test:cf   # เฉพาะ Cloudflare (ต้องใช้ Node 22.5 ขึ้นไป รุ่นเก่ากว่าจะข้ามให้เอง)
 ```

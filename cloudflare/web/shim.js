@@ -42,7 +42,7 @@
   /** ส่งไฟล์ตรงไป Apps Script คืนผลผิดพลาดที่ต้องแสดง หรือ null (สำเร็จ หรือให้ส่งผ่าน Cloudflare แทน) */
   function sendDirect(fn, args, files) {
     var probe = JSON.parse(JSON.stringify(args, function (k, v) {
-      return k === 'dataB64' && typeof v === 'string' ? 'precheck:' + b64Size(v) : v;
+      return k === 'dataB64' && typeof v === 'string' && !/^staged:/.test(v) ? 'precheck:' + b64Size(v) : v;
     }));
     return postJson('/api/ticket', { fn: fn, args: probe }).then(function (t) {
       if (!t || !t.ok) return t || { ok: false, error: 'ตรวจสอบไฟล์ไม่สำเร็จ กรุณาลองใหม่' };

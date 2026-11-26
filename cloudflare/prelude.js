@@ -207,7 +207,7 @@ function cfStagedBytes(text) {
   // ตรวจสิทธิ์ก่อนอัปโหลด: รันคำสั่งจริงจนถึงจุดอ่านไฟล์ ได้ขนาดตามที่แจ้ง (Durable Object ไม่บันทึกผลรอบนี้)
   var pm = /^precheck:(\d+)$/.exec(String(text));
   if (pm) {
-    if (!HOST.precheck()) throw new Error('ข้อมูลไฟล์ไม่ถูกต้อง');
+    if (!HOST.precheck()) throw new Error('ข้อมูลไฟล์ไม่ถูกต้อง กรุณาเลือกไฟล์ใหม่แล้วลองอีกครั้ง');
     HOST.precheckDecoded();
     return { _precheck: true, length: +pm[1] };
   }

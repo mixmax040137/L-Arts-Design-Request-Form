@@ -26,7 +26,7 @@ var APP = {
   SHORT_NAME: 'L-Arts Design Request',
   ORG: 'ฝ่ายสื่อสารองค์กร คณะศิลปศาสตร์ มหาวิทยาลัยธรรมศาสตร์',
   ORG_SHORT: 'คณะศิลปศาสตร์ มธ.',
-  VERSION: '1.1.1',
+  VERSION: '1.1.2',
   TIMEZONE: 'Asia/Bangkok',
   ROOT_FOLDER_NAME: 'Design Request System'
 };
@@ -6187,6 +6187,10 @@ function bridgeIo_(kind, a) {
     var file;
     if (str_(a.staged)) {
       file = DriveApp.getFileById(str_(a.staged));
+      // ใบรับไฟล์ใช้ได้ครั้งเดียว: ไฟล์ที่ย้ายเข้าโฟลเดอร์งานไปแล้วต้องไม่ถูกดึงไปงานอื่น
+      if (!bridgeIsStaged_(file)) {
+        return { ok: false, error: 'ไฟล์นี้ถูกแนบไปแล้ว กรุณาเลือกไฟล์แล้วอัปโหลดใหม่อีกครั้ง' };
+      }
       file.moveTo(target);
       file.setName(str_(a.name));
     } else {
@@ -6234,7 +6238,7 @@ function bridgeStage_(b) {
   } catch (err) {
     return { ok: false, error: 'ไฟล์เสียหายหรืออ่านไม่ได้ กรุณาลองใหม่' };
   }
-  if (bytes.length > BRIDGE_MAX_FILE_BYTES) return { ok: false, error: 'ไฟล์ใหญ่เกิน 30 MB' };
+  if (bytes.length > BRIDGE_MAX_FILE_BYTES) return { ok: false, error: 'ไฟล์ใหญ่เกิน 30 MB กรุณาลดขนาดไฟล์หรือแบ่งเป็นหลายไฟล์' };
   return bridgeStageBytes_(bytes, b.name, b.mime);
 }
 
@@ -6243,6 +6247,17 @@ function bridgeStageBytes_(bytes, name, mime) {
   var file = bridgeStagingFolder_().createFile(
     Utilities.newBlob(bytes, str_(mime) || 'application/octet-stream', safe));
   return { ok: true, id: file.getId(), size: bytes.length };
+}
+
+/** ไฟล์ยังอยู่ในโฟลเดอร์พักไฟล์หรือไม่ (ยังไม่ถูกย้ายเข้าโฟลเดอร์งานใด) */
+function bridgeIsStaged_(file) {
+  var stagingId = getProp_(BRIDGE.STAGING_FOLDER_ID);
+  if (!stagingId) return false;
+  var it = file.getParents();
+  while (it.hasNext()) {
+    if (it.next().getId() === stagingId) return true;
+  }
+  return false;
 }
 
 /** ลายมือชื่อแบบเดียวกับที่ Cloudflare ใช้ (HMAC-SHA256 16 ไบต์แรก เป็นเลขฐานสิบหก) */
@@ -6272,8 +6287,16 @@ function bridgeUpload_(b) {
   if (Number(t[0]) < new Date().getTime()) return invalid;
   if (!timingSafeEqual_(t[3], bridgeSigHex_(secret, 'up|' + t[0] + '|' + t[1] + '|' + t[2]))) return invalid;
   var cache = CacheService.getScriptCache();
-  if (cache.get('bup:' + t[1])) return invalid;
-  cache.put('bup:' + t[1], '1', 21600);
+  var lock = LockService.getUserLock();
+  if (!lock.tryLock(10000)) {
+    return { ok: false, error: 'มีการอัปโหลดพร้อมกันจำนวนมาก กรุณารอสักครู่แล้วลองใหม่' };
+  }
+  try {
+    if (cache.get('bup:' + t[1])) return invalid;
+    cache.put('bup:' + t[1], '1', 21600);
+  } finally {
+    lock.releaseLock();
+  }
   var bytes;
   try {
     bytes = Utilities.base64Decode(str_(b.b64));

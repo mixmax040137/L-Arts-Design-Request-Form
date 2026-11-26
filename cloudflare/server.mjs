@@ -30,7 +30,9 @@ const MAX_FILE_B64 = Math.ceil(30 * 1024 * 1024 / 3) * 4;
 const MAX_IO_ROUNDS = 25;
 /** ไฟล์หนึ่งไฟล์ใหญ่สุด (ตรงกับ BRIDGE_MAX_FILE_BYTES ของ Apps Script) และอายุใบอนุญาตอัปโหลด */
 const MAX_FILE_BYTES = 30 * 1024 * 1024;
-const TICKET_TTL_MS = 15 * 60000;
+const TICKET_TTL_MS = 60 * 60000;          // เผื่อเน็ตช้า: ไฟล์ 25 MB ส่งได้ครบก่อนหมดอายุ (ใช้ได้ครั้งเดียวอยู่แล้ว)
+/** ใบอนุญาตต่อคำสั่งเดียวกัน (งานเดียวกันหรือ token เดียวกัน) ไม่เกินกี่ใบต่อชั่วโมง กันส่งไฟล์ท่วม Drive */
+const TICKETS_PER_HOUR = 60;
 /** ส่งไปสำรองได้ไม่เกินกี่ชุดต่อครั้ง (แผนฟรีเรียกออกได้ 50 ครั้งต่อการทำงานหนึ่งครั้ง) ที่เหลือทำต่อในรอบถัดไป */
 const DELIVER_MAX_BATCHES = 20;
 const SPARE_MIN = 3;
@@ -57,7 +59,9 @@ export default {
     const url = new URL(request.url);
     if (url.pathname.startsWith('/internal')) return text('ไม่พบหน้านี้', 404);
     const stub = env.APP.get(env.APP.idFromName('main'));
-    if (request.method === 'POST' && url.pathname === '/api') return apiViaWorker(request, stub, url);
+    // ตัด / ท้ายแบบเดียวกับ Durable Object ไม่งั้น "/api/" จะข้ามการตรวจไฟล์ของ Worker ไปถึง Durable Object ตรง ๆ
+    const path = url.pathname.replace(/\/+$/, '') || '/';
+    if (request.method === 'POST' && path === '/api') return apiViaWorker(request, stub, url);
     return stub.fetch(request);
   }
 };
@@ -76,11 +80,14 @@ async function apiViaWorker(request, stub, url) {
     const files = collectFiles(body && body.args).filter((f) => !/^staged:/.test(f.dataB64));
     if (files.length) {
       for (const f of files) {
-        if (/^precheck:/.test(f.dataB64)) return json({ ok: false, error: 'ข้อมูลไฟล์ไม่ถูกต้อง' }, 400);
-        if (f.dataB64.length > MAX_FILE_B64) return json({ ok: false, error: 'ไฟล์ "' + String(f.fileName || '') + '" ใหญ่เกิน 30 MB' });
+        if (/^precheck:/.test(f.dataB64)) return json({ ok: false, error: 'ข้อมูลไฟล์ไม่ถูกต้อง กรุณาเลือกไฟล์ใหม่แล้วลองอีกครั้ง' }, 400);
+        if (f.dataB64.length > MAX_FILE_B64) {
+          return json({ ok: false, error: 'ไฟล์ "' + String(f.fileName || '') + '" ใหญ่เกิน 30 MB กรุณาลดขนาดไฟล์หรือแบ่งเป็นหลายไฟล์' });
+        }
       }
       // ตรวจสิทธิ์ก่อนส่งไฟล์ไปพักบน Drive (คนที่ไม่มีสิทธิ์ส่งไฟล์เข้า Drive ของคณะไม่ได้)
-      const probe = JSON.parse(JSON.stringify(body, (k, v) => (k === 'dataB64' && typeof v === 'string' ? 'precheck:' + b64Size(v) : v)));
+      const probe = JSON.parse(JSON.stringify(body, (k, v) =>
+        (k === 'dataB64' && typeof v === 'string' && !/^staged:/.test(v) ? 'precheck:' + b64Size(v) : v)));
       const pre = await (await stub.fetch(new Request(url.origin + '/api/ticket', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(probe)
       }))).json();
@@ -457,6 +464,7 @@ export class LartsDesign {
     this.folderCache = new Map();
     this.jobs = Promise.resolve();
     this.pre = null;   // สถานะระหว่างตรวจสิทธิ์ก่อนอัปโหลด (precheckRun)
+    this.ticketUse = new Map();
     this.delivering = null;
     this.refilling = false;
     this.io = null;
@@ -848,6 +856,22 @@ export class LartsDesign {
     return { ok: false, error: 'ตรวจสอบสิทธิ์การแนบไฟล์ไม่สำเร็จ กรุณารีเฟรชหน้าแล้วลองใหม่' };
   }
 
+  /** โควตาใบอนุญาตในหน่วยความจำ (พอสำหรับกันการส่งไฟล์ท่วม รีเซ็ตเมื่อ Durable Object เริ่มใหม่) */
+  ticketBudget(key, n) {
+    const now = Date.now();
+    const e = this.ticketUse.get(key);
+    if (!e || now - e.at > 3600000) {
+      if (this.ticketUse.size > 5000) {
+        for (const [k, v] of this.ticketUse) if (now - v.at > 3600000) this.ticketUse.delete(k);
+      }
+      this.ticketUse.set(key, { at: now, n });
+      return n <= TICKETS_PER_HOUR;
+    }
+    if (e.n + n > TICKETS_PER_HOUR) return false;
+    e.n += n;
+    return true;
+  }
+
   precheckStop() {
     if (this.pre) this.pre.stopped = true;
     const e = new Error('ตรวจสอบสิทธิ์แล้ว');
@@ -863,7 +887,8 @@ export class LartsDesign {
     if (this.detached()) return { ok: false, code: 'MOVED', error: 'ระบบกลับไปให้บริการที่ Apps Script ชั่วคราว กรุณารีเฟรชหน้านี้' };
     if (!this.paired()) return { ok: false, error: 'ระบบยังไม่พร้อมรับไฟล์ กรุณาติดต่อฝ่ายสื่อสารองค์กร' };
     const args = Array.isArray(body.args) ? body.args : [];
-    const files = collectFiles(args);
+    // ใบรับไฟล์ที่ส่งไปแล้ว ("staged:") ไม่ต้องขอใบอนุญาตใหม่
+    const files = collectFiles(args).filter((f) => !/^staged:/.test(f.dataB64));
     if (!files.length || files.length > 5) return { ok: false, error: 'ข้อมูลไฟล์ไม่ถูกต้อง กรุณาเลือกไฟล์ใหม่' };
     const sizes = [];
     for (const f of files) {
@@ -871,11 +896,17 @@ export class LartsDesign {
       if (!m) return { ok: false, error: 'ข้อมูลไฟล์ไม่ถูกต้อง กรุณาเลือกไฟล์ใหม่' };
       const size = Number(m[1]);
       if (size < 1) return { ok: false, error: 'ไฟล์ "' + String(f.fileName || '') + '" ว่างเปล่า กรุณาเลือกไฟล์ใหม่' };
-      if (size > MAX_FILE_BYTES) return { ok: false, error: 'ไฟล์ "' + String(f.fileName || '') + '" ใหญ่เกิน 30 MB' };
+      if (size > MAX_FILE_BYTES) {
+        return { ok: false, error: 'ไฟล์ "' + String(f.fileName || '') + '" ใหญ่เกิน 30 MB กรุณาลดขนาดไฟล์หรือแบ่งเป็นหลายไฟล์' };
+      }
       sizes.push(size);
     }
     const res = this.precheckRun(fn, args);
     if (!res.ok) return res;
+    // นับหลังตรวจสิทธิ์ผ่าน: ผู้มีสิทธิ์ขอได้ไม่เกิน TICKETS_PER_HOUR ใบต่อชั่วโมงต่องาน (หรือต่อ token ของเจ้าหน้าที่)
+    if (!this.ticketBudget(fn + '|' + String(args[0] || ''), sizes.length)) {
+      return { ok: false, error: 'แนบไฟล์ถี่เกินไป กรุณารอประมาณ 1 ชั่วโมงแล้วลองใหม่ หรือติดต่อฝ่ายสื่อสารองค์กร' };
+    }
     const secret = this.store.getProp(P.SECRET) || '';
     const exp = Date.now() + TICKET_TTL_MS;
     const tickets = [];
@@ -884,6 +915,20 @@ export class LartsDesign {
       tickets.push(exp + '.' + nonce + '.' + size + '.' + await hmacHex16(secret, 'up|' + exp + '|' + nonce + '|' + size));
     }
     return { ok: true, gasUrl: this.store.getProp(P.GAS_URL) || '', tickets };
+  }
+
+  /**
+   * ข้อความเมื่อยังมีของค้างส่ง: แยก "กำลังทยอยส่ง" (ส่งได้ครั้งละ DELIVER_MAX_BATCHES ชุด) ออกจาก "ส่งไม่สำเร็จ"
+   * คืน '' ถ้าไม่มีของค้าง
+   */
+  backlogMessage(action) {
+    const n = this.store.outboxCount();
+    if (!n) return '';
+    if (Number(this.store.getProp(P.FAILS) || 0) > 0) {
+      return 'ส่งข้อมูลไปสำรองไม่สำเร็จ ค้างอยู่ ' + n + ' ชุด (' + (this.store.getProp(P.LAST_ERR) || 'ไม่ทราบสาเหตุ') +
+        ') ระบบจะลองส่งใหม่เอง กรุณาตรวจว่า Apps Script ยังเปิดใช้งานอยู่ แล้วค่อย' + action + 'อีกครั้ง';
+    }
+    return 'ระบบกำลังทยอยส่งข้อมูลไปสำรองอีก ' + n + ' ชุด กรุณารอ 1–2 นาทีแล้วกด' + action + 'อีกครั้ง';
   }
 
   /** มีของค้างส่ง = ส่งเลย (รู้ผลจากการส่ง) ไม่มี = ถามสถานะ ถ้า Apps Script ไม่รู้จักรหัสลับแล้ว หยุดรับข้อมูล */
@@ -1011,9 +1056,8 @@ export class LartsDesign {
       // จับคู่ใหม่ = ดึงข้อมูลจาก Apps Script มาทับ ต้องส่งของที่ค้างให้ถึงก่อน ไม่งั้นการแก้ล่าสุดหาย
       await this.checkAdmin(body);
       await this.deliver();
-      if (this.store.outboxCount() > 0) {
-        return { ok: false, error: 'ยังมีข้อมูลที่ส่งไปสำรองไม่สำเร็จ ' + this.store.outboxCount() + ' ชุด กรุณาแก้การเชื่อมต่อให้ส่งได้ก่อน แล้วค่อยจับคู่ใหม่' };
-      }
+      const waiting = this.backlogMessage('จับคู่ใหม่');
+      if (waiting) return { ok: false, error: waiting };
     }
     this.pairing = true;
     try {
@@ -1067,6 +1111,8 @@ export class LartsDesign {
     if (!this.paired()) return { ok: false, error: 'ยังไม่ได้เชื่อมกับ Apps Script' };
     await this.checkAdmin(body);
     await this.deliver();
+    const waiting = this.backlogMessage('ตรวจเทียบ');
+    if (waiting) return { ok: false, error: waiting, pending: this.store.outboxCount() };
     const exp = await this.gas({ op: 'export' }, 300000);
     if (!exp.ok) return { ok: false, error: 'ดึงข้อมูลจาก Apps Script ไม่สำเร็จ: ' + exp.error };
     const theirs = { main: exp.main || {}, archive: (exp.archive && exp.archive.sheets) || {} };
